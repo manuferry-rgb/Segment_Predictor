@@ -68,7 +68,7 @@ Je dois pouvoir expliquer chaque ligne en entretien.
 ## Structure
 
 ```
-src/kompass/
+src/segment_predictor/
   ingest/        # appels API bruts -> Parquet, aucune transformation
   storage/       # schéma DuckDB, chargement, requêtes
   models/
