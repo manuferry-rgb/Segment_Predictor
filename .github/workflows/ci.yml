@@ -1,0 +1,30 @@
+name: CI
+
+# Déclenché à chaque push et à chaque pull request, quelle que soit la branche.
+# Vérifier aussi les PR permet d'attraper les problèmes avant le merge dans main.
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # astral-sh/setup-uv installe uv et gère son propre cache de dépendances,
+      # ce qui accélère les runs suivants.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Test
+        run: uv run pytest
