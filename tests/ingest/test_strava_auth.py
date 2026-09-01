@@ -4,6 +4,8 @@ Le httpx.Client reçoit un MockTransport : une fonction qui joue le rôle
 du serveur Strava et renvoie une réponse HTTP fabriquée à la main.
 """
 
+import os
+
 import httpx
 import pytest
 from dotenv import dotenv_values
@@ -11,6 +13,7 @@ from dotenv import dotenv_values
 from segment_predictor.ingest.strava_auth import (
     TokenState,
     get_valid_access_token,
+    persist_tokens,
     refresh_access_token,
 )
 
@@ -131,3 +134,68 @@ def test_get_valid_access_token_raises_explicitly_when_client_id_missing(tmp_pat
 
     with pytest.raises(KeyError, match="STRAVA_CLIENT_ID"):
         get_valid_access_token(client, env_path, now=0)
+
+
+def test_persist_tokens_writes_all_keys_in_one_atomic_replace(tmp_path, monkeypatch) -> None:
+    """Les 3 clés doivent être écrites en un seul os.replace, pas 3 séparés —
+    sinon un crash entre deux écritures laisserait un état mélangé
+    (ex. nouvel access_token + ancien refresh_token, déjà mort côté Strava).
+    """
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "STRAVA_CLIENT_ID=id\n"
+        "STRAVA_CLIENT_SECRET=secret\n"
+        "STRAVA_REFRESH_TOKEN=old_refresh\n"
+        "STRAVA_ACCESS_TOKEN=old_access\n"
+        "STRAVA_EXPIRES_AT=100\n"
+    )
+
+    real_replace = os.replace
+    calls_made = {"count": 0}
+
+    def counting_replace(*args, **kwargs):
+        calls_made["count"] += 1
+        return real_replace(*args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", counting_replace)
+
+    token_state = TokenState(access_token="new_access", refresh_token="new_refresh", expires_at=999)
+    persist_tokens(env_path, token_state)
+
+    assert calls_made["count"] == 1
+    persisted = dotenv_values(env_path)
+    assert persisted["STRAVA_ACCESS_TOKEN"] == "new_access"
+    assert persisted["STRAVA_REFRESH_TOKEN"] == "new_refresh"
+    assert persisted["STRAVA_EXPIRES_AT"] == "999"
+
+
+def test_persist_tokens_leaves_file_untouched_if_write_fails(tmp_path, monkeypatch) -> None:
+    """Si l'écriture atomique échoue (simulateur de crash), le .env doit
+    rester exactement dans son ancien état — pas de mélange, pas de fichier
+    temporaire résiduel.
+    """
+    env_path = tmp_path / ".env"
+    original_content = (
+        "STRAVA_CLIENT_ID=id\n"
+        "STRAVA_CLIENT_SECRET=secret\n"
+        "STRAVA_REFRESH_TOKEN=old_refresh\n"
+        "STRAVA_ACCESS_TOKEN=old_access\n"
+        "STRAVA_EXPIRES_AT=100\n"
+    )
+    env_path.write_text(original_content)
+
+    def failing_replace(*args, **kwargs):
+        raise OSError("simulated crash during os.replace")
+
+    monkeypatch.setattr(os, "replace", failing_replace)
+
+    token_state = TokenState(access_token="new_access", refresh_token="new_refresh", expires_at=999)
+
+    with pytest.raises(OSError):
+        persist_tokens(env_path, token_state)
+
+    persisted = dotenv_values(env_path)
+    assert persisted["STRAVA_ACCESS_TOKEN"] == "old_access"
+    assert persisted["STRAVA_REFRESH_TOKEN"] == "old_refresh"
+    leftover_tmp_files = [p for p in tmp_path.iterdir() if p.name != ".env"]
+    assert leftover_tmp_files == []

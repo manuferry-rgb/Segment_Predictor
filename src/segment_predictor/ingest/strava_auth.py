@@ -12,12 +12,14 @@ et le projet est mono-utilisateur — une base ou un fichier séparé
 serait une couche en trop pour 3 valeurs.
 """
 
+import os
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
-from dotenv import dotenv_values, set_key
+from dotenv import dotenv_values
 
 STRAVA_TOKEN_URL = "https://www.strava.com/oauth/token"
 
@@ -66,10 +68,32 @@ def _require(values: dict[str, str | None], key: str) -> str:
 
 
 def persist_tokens(env_path: Path, token_state: TokenState) -> None:
-    """Réécrit les 3 clés Strava dans le .env, en place (rotation du refresh_token incluse)."""
-    set_key(env_path, "STRAVA_ACCESS_TOKEN", token_state.access_token, quote_mode="never")
-    set_key(env_path, "STRAVA_REFRESH_TOKEN", token_state.refresh_token, quote_mode="never")
-    set_key(env_path, "STRAVA_EXPIRES_AT", str(token_state.expires_at), quote_mode="never")
+    """Réécrit les 3 clés Strava dans le .env en une seule écriture atomique.
+
+    Une seule écriture (fichier temporaire + os.replace), plutôt que 3
+    appels séparés : si le process meurt en cours de route, le .env
+    reste soit entièrement dans l'ancien état, soit entièrement dans le
+    nouveau — jamais un mélange des deux. Un mélange serait pire qu'une
+    perte totale : l'ancien refresh_token est déjà mort côté Strava une
+    fois le nouveau émis, donc un access_token neuf combiné à un
+    refresh_token périmé casse silencieusement le prochain rafraîchissement.
+    """
+    values = dict(dotenv_values(env_path))
+    values["STRAVA_ACCESS_TOKEN"] = token_state.access_token
+    values["STRAVA_REFRESH_TOKEN"] = token_state.refresh_token
+    values["STRAVA_EXPIRES_AT"] = str(token_state.expires_at)
+    content = "".join(f"{key}={value}\n" for key, value in values.items())
+
+    # tempfile dans le même dossier que .env : os.replace n'est atomique
+    # que si source et destination sont sur le même système de fichiers.
+    fd, tmp_path = tempfile.mkstemp(dir=env_path.parent, prefix=".env.tmp-")
+    try:
+        with os.fdopen(fd, "w") as tmp_file:
+            tmp_file.write(content)
+        os.replace(tmp_path, env_path)
+    except BaseException:
+        os.unlink(tmp_path)
+        raise
 
 
 def get_valid_access_token(
