@@ -10,3 +10,6 @@ wheels/
 .venv
 .env
 .DS_Store
+
+# Données personnelles ingérées (Strava, etc.) — jamais committées
+data/
