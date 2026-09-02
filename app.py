@@ -205,22 +205,28 @@ if st.button("Chercher la meilleure fenêtre", type="primary"):
             delta=_format_gap_s(best.predicted_time_s, pr_seconds),
             delta_color="inverse",
         )
-        # Puissance moyenne sur L'EFFORT DU PR (T-31), pour estimer soi-même
-        # la puissance à tenir pour viser le KOM. Retrouvé par
-        # (segment_id, elapsed_time_s) : `segments.pr_seconds` ne porte pas
-        # l'id de l'effort correspondant, donc pas de jointure directe.
-        # `average_watts` peut être NULL (pas de capteur ce jour-là, T-07b) —
-        # pas de valeur inventée, on l'indique explicitement.
-        pr_power_row = conn.execute(
-            "SELECT average_watts, device_watts FROM segment_efforts "
-            "WHERE segment_id = ? AND elapsed_time_s = ? "
+        # Détails de L'EFFORT DU PR (T-31), pour estimer soi-même la
+        # puissance à tenir pour viser le KOM et retrouver la sortie
+        # d'origine. Retrouvé par (segment_id, elapsed_time_s) :
+        # `segments.pr_seconds` ne porte pas l'id de l'effort correspondant,
+        # donc pas de jointure directe.
+        pr_effort_row = conn.execute(
+            "SELECT average_watts, device_watts, start_date, activity_id "
+            "FROM segment_efforts WHERE segment_id = ? AND elapsed_time_s = ? "
             "ORDER BY start_date DESC LIMIT 1",
             [segment_id, pr_seconds],
         ).fetchone()
-        if pr_power_row is not None and pr_power_row[0] is not None:
-            pr_average_watts, device_watts = pr_power_row
-            sensor_note = "" if device_watts else " (non confirmé par un capteur)"
-            pr_col.caption(f"Puissance moyenne : {pr_average_watts:.0f} W{sensor_note}")
+        if pr_effort_row is not None:
+            pr_average_watts, device_watts, pr_start_date, pr_activity_id = pr_effort_row
+            strava_url = f"https://www.strava.com/activities/{pr_activity_id}"
+            pr_col.caption(f"Réalisé le {pr_start_date:%d/%m/%Y} · [Voir sur Strava]({strava_url})")
+            # `average_watts` peut être NULL (pas de capteur ce jour-là,
+            # T-07b) — pas de valeur inventée, on l'indique explicitement.
+            if pr_average_watts is not None:
+                sensor_note = "" if device_watts else " (non confirmé par un capteur)"
+                pr_col.caption(f"Puissance moyenne : {pr_average_watts:.0f} W{sensor_note}")
+            else:
+                pr_col.caption("Puissance moyenne : non disponible")
         else:
             pr_col.caption("Puissance moyenne : non disponible")
     else:
