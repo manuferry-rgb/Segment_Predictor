@@ -36,6 +36,7 @@ def _raw_ride(activity_id: int, **overrides) -> dict:
         "average_heartrate": 145.0,
         "max_heartrate": 178.0,
         "average_cadence": 88.0,
+        "start_latlng": [47.7, 7.4],
     }
     base.update(overrides)
     return base
@@ -120,6 +121,29 @@ def test_build_activities_table_combines_multiple_raw_files(tmp_path) -> None:
 
     count = conn.execute("SELECT count(*) FROM activities").fetchone()[0]
     assert count == 2
+
+
+def test_build_activities_table_extracts_start_latlng(tmp_path) -> None:
+    raw_dir = tmp_path / "activities"
+    _write_raw_activities(raw_dir, [_raw_ride(1, start_latlng=[47.7, 7.4])])
+
+    conn = duckdb.connect(":memory:")
+    build_activities_table(conn, raw_dir)
+
+    row = conn.execute("SELECT start_lat, start_lng FROM activities").fetchone()
+    assert row == (47.7, 7.4)
+
+
+def test_build_activities_table_allows_null_start_latlng(tmp_path) -> None:
+    """Une activité indoor (home trainer) a start_latlng=[] côté Strava, pas absent."""
+    raw_dir = tmp_path / "activities"
+    _write_raw_activities(raw_dir, [_raw_ride(1, start_latlng=[])])
+
+    conn = duckdb.connect(":memory:")
+    build_activities_table(conn, raw_dir)
+
+    row = conn.execute("SELECT start_lat, start_lng FROM activities").fetchone()
+    assert row == (None, None)
 
 
 def test_build_activities_table_replaces_existing_table(tmp_path) -> None:

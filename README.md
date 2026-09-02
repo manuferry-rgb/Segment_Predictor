@@ -72,6 +72,45 @@ demande un nouvel ingest (`GET /activities/{id}` en vue détaillée, qui
 embarque un tableau `segment_efforts` par activité) — voir T-07b dans
 `ROADMAP.md`.
 
+### `main.activity_weather` (T-14)
+
+PK/FK `activity_id → activities.id`. Une ligne par sortie vélo
+(`Ride`/`VirtualRide` uniquement — hors périmètre pour la marche/course)
+géolocalisée dont la zone météo a été téléchargée. Météo Open-Meteo
+(archive, gratuite, sans clé) interpolée linéairement entre les deux
+relevés horaires encadrant le `start_date` exact de l'activité.
+
+| colonne | type | note |
+|---|---|---|
+| activity_id | BIGINT | PK, FK -> activities.id |
+| temperature_k | DOUBLE | converti depuis °C |
+| relative_humidity_pct | DOUBLE | 0-100 |
+| pressure_pa | DOUBLE | converti depuis hPa |
+| wind_speed_ms | DOUBLE | converti depuis km/h |
+| wind_direction_rad | DOUBLE | 0 = nord, croît vers l'est — même convention que `heading_rad` (T-12). Interpolé en composantes (cos, sin), pas en degrés bruts (l'angle traverse 0°/360°) |
+
+Ingest (`ingest/open_meteo.py`) : un Parquet par **zone géographique**
+(grille 0.1° ≈ 11km, arrondi à la résolution native des données de
+réanalyse Open-Meteo), pas par activité — `compute_weather_zones`
+regroupe les activités par zone et calcule la plage de dates à couvrir.
+Sur les 699 sorties vélo géolocalisées du jeu de données actuel, ça
+donne 133 zones (le vélo se pratique sur des lieux plus dispersés que
+prévu au départ — voyages, essais de nouveaux itinéraires — d'où
+133 plutôt que les ~68 estimés en ne comptant que les zones les plus
+fréquentées). Une zone déjà téléchargée n'est jamais redemandée, y
+compris si de nouvelles activités dans cette zone tombent hors de sa
+plage de dates déjà couverte (il faut supprimer le fichier pour forcer
+un refetch).
+
+**Limitation connue, non corrigée** : le vent Open-Meteo (`wind_speed_10m`)
+est mesuré à 10m de hauteur, pas au niveau du cycliste. Le vent réel
+ressenti près du sol est généralement plus faible (frottement de
+surface, effet de couche limite) — utiliser `wind_speed_ms` tel quel
+tend à **surestimer** le vent effectif. Une correction nécessiterait un
+profil vertical du vent (loi logarithmique ou en puissance), pas fait
+ici : le vent est simplement absent des calculs de puissance jusqu'à
+T-15/T-19.
+
 ### Limites connues
 
 - Une seule activité (`10066651328`) a 63 échantillons `heartrate = -1`
@@ -81,3 +120,5 @@ embarque un tableau `segment_efforts` par activité) — voir T-07b dans
 - `main.activities` ne recopie qu'un sous-ensemble des champs bruts.
   Le reste (kudos, athlète, polyline de la carte...) reste accessible
   via `raw.activities` si besoin.
+- Le vent Open-Meteo est mesuré à 10m, pas au niveau du cycliste (détail
+  ci-dessus, section `main.activity_weather`).

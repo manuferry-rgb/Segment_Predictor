@@ -31,7 +31,17 @@ def _parse_start_date(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
 
 
+def _extract_start_latlng(raw_activity: dict) -> tuple[float | None, float | None]:
+    """`start_latlng` vaut `[]` (pas absent) pour une activité indoor sans GPS."""
+    start_latlng = raw_activity.get("start_latlng")
+    if not start_latlng:
+        return None, None
+    lat, lng = start_latlng
+    return lat, lng
+
+
 def _activity_to_row(raw_activity: dict) -> dict:
+    start_lat, start_lng = _extract_start_latlng(raw_activity)
     return {
         "id": raw_activity["id"],
         "name": raw_activity["name"],
@@ -47,6 +57,8 @@ def _activity_to_row(raw_activity: dict) -> dict:
         "average_heartrate": raw_activity.get("average_heartrate"),
         "max_heartrate": raw_activity.get("max_heartrate"),
         "average_cadence": raw_activity.get("average_cadence"),
+        "start_lat": start_lat,
+        "start_lng": start_lng,
     }
 
 
