@@ -6,7 +6,11 @@ import duckdb
 import pyarrow as pa
 import pytest
 
-from segment_predictor.calibrate.form import compute_performance_index_series
+from segment_predictor.calibrate.form import (
+    build_form_regression_dataset,
+    compute_performance_index_series,
+)
+from segment_predictor.calibrate.training_load import compute_training_load_from_db
 from segment_predictor.models.power import CriticalPowerFit
 
 _CP_FIT = CriticalPowerFit(
@@ -30,12 +34,13 @@ def _flat_stream_rows(activity_id: int, watts: float, n_seconds: int) -> list[di
     ]
 
 
-def _activity(activity_id: int, start_date: datetime) -> dict:
+def _activity(activity_id: int, start_date: datetime, moving_time_s: int = 3600) -> dict:
     return {
         "id": activity_id,
         "type": "Ride",
         "device_watts": True,
         "start_date": start_date,
+        "moving_time_s": moving_time_s,
     }
 
 
@@ -118,3 +123,40 @@ def test_ignores_non_cycling_activities() -> None:
     points = compute_performance_index_series(conn, cp_fit=_CP_FIT, durations_s=[300])
 
     assert points == []
+
+
+# ---- build_form_regression_dataset -----------------------------------------------------------
+
+
+def test_build_form_regression_dataset_joins_index_with_same_date_training_load() -> None:
+    activities = [
+        _activity(1, datetime(2024, 1, 1), moving_time_s=300),
+        _activity(2, datetime(2024, 1, 2), moving_time_s=300),
+    ]
+    streams = _flat_stream_rows(1, 300.0, 300) + _flat_stream_rows(2, 305.0, 300)
+    conn = _make_db(activities, streams)
+
+    x, y, dates = build_form_regression_dataset(conn, cp_fit=_CP_FIT, durations_s=[300])
+
+    assert x.shape == (2, 4)  # ctl, atl, tsb, duration_s
+    assert dates == [date(2024, 1, 1), date(2024, 1, 2)]
+    assert (x[:, 3] == 300).all()  # duration_s
+
+    load_dates, load_points = compute_training_load_from_db(conn, cp_fit=_CP_FIT)
+    load_by_date = dict(zip(load_dates, load_points, strict=True))
+    for i, day in enumerate(dates):
+        assert x[i, 0] == pytest.approx(load_by_date[day].ctl)
+        assert x[i, 1] == pytest.approx(load_by_date[day].atl)
+        assert x[i, 2] == pytest.approx(load_by_date[day].tsb)
+
+    index_points = compute_performance_index_series(conn, cp_fit=_CP_FIT, durations_s=[300])
+    assert list(y) == pytest.approx([p.index for p in index_points])
+
+
+def test_build_form_regression_dataset_raises_when_no_index_points() -> None:
+    activities = [_activity(1, datetime(2024, 1, 1), moving_time_s=60)]
+    streams = _flat_stream_rows(1, 300.0, 60)  # < 180s : hors plage de validité CP
+    conn = _make_db(activities, streams)
+
+    with pytest.raises(ValueError, match="indice de performance"):
+        build_form_regression_dataset(conn, cp_fit=_CP_FIT, durations_s=[60])

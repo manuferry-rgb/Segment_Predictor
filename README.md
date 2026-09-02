@@ -338,6 +338,44 @@ du moment" paraissent logiquement loin du plafond de forme le plus
 récent, ce n'est pas un signe de mauvaise forme passée mais l'effet
 mécanique de comparer à un plafond qui n'existait pas encore.
 
+## Modèle de forme (T-24)
+
+`models/form_regression.py` : Ridge (`fit_ridge`/`predict_ridge`, solution
+fermée β = (XᵀX + alpha·I)⁻¹Xᵀy sur features standardisées) et R²
+(`r_squared`), implémentés à la main avec numpy/scipy plutôt qu'avec
+scikit-learn — pas de nouvelle dépendance pour une résolution d'algèbre
+linéaire de quelques lignes, choix fait avec toi avant de coder.
+`temporal_cross_validate_ridge` découpe en blocs chronologiques
+successifs (comme T-18) : chaque fold entraîne sur le passé, teste sur
+un futur qu'il n'a jamais vu.
+
+`calibrate/form.py` (`build_form_regression_dataset`) joint l'indice de
+performance (T-23) au CTL/ATL/TSB de la même date exacte (T-21), plus
+`duration_s` comme 4e feature (absorbe le biais résiduel du modèle CP
+selon la durée, visible dans le graphique T-23). Les 4 champs wellness
+(T-22) sont **volontairement exclus** : quasi tous vides en pratique
+(0 `hrv`, 0 `sleep_s`, `resting_heart_rate_bpm` constant, 1 seule
+`weight_kg` — voir T-22), les inclure aurait demandé une imputation
+inventant des données absentes.
+
+`uv run python scripts/fit_form_model.py` — critère de fin du ticket.
+
+**Résultat réel, honnête : R² moyen en validation croisée temporelle =
+-3.47** (5 folds, de -0.49 à -5.36) — nettement pire que de prédire la
+moyenne d'entraînement. Diagnostiqué, pas juste rapporté tel quel : le
+R² **en échantillon** (train = test, tout l'historique) est correct
+(0.70), donc CTL/ATL/TSB/durée portent un vrai signal — mais l'indice de
+performance dérive fortement par année (moyenne 0.62 en 2021, 0.81 en
+2023, 0.90 en 2024, 0.96 en 2025-2026, cf T-23) et CTL/ATL/TSB
+n'encodent pas "combien de temps s'est écoulé". Un modèle entraîné sur
+les années anciennes (indice bas) sous-estime donc systématiquement les
+années récentes (indice haut) — exactement ce qu'une validation croisée
+*temporelle* est censée révéler, contrairement à une validation
+aléatoire qui aurait caché ce problème. Piste pour plus tard, pas
+traitée ici : la dérive vient surtout du choix d'un CP fixe (T-17/T-21)
+comme référence de `performance_index`, pas forcément d'une vraie
+absence de lien forme/performance.
+
 ### Limites connues
 
 - Une seule activité (`10066651328`) a 63 échantillons `heartrate = -1`
