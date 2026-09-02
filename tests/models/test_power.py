@@ -13,7 +13,9 @@ from segment_predictor.models.power import (
     fit_critical_power,
     mean_maximal_power,
     mean_maximal_power_curve,
+    normalized_power,
     resample_to_uniform_seconds,
+    training_stress_score,
 )
 
 # ---- mean_maximal_power --------------------------------------------------------------
@@ -254,3 +256,84 @@ def test_fit_raises_when_fewer_than_two_valid_points_in_range() -> None:
     mmp = _hyperbola(durations, 250.0, 20_000.0)
     with pytest.raises(ValueError, match="point"):
         fit_critical_power(durations, mmp)
+
+
+# ---- normalized_power (T-21) ----------------------------------------------------------------
+
+
+def test_normalized_power_equals_constant_for_steady_power() -> None:
+    """Puissance parfaitement constante : la moyenne glissante 30s vaut
+    tout le temps cette constante, donc NP = cette constante (le cas où
+    NP et puissance moyenne coïncident)."""
+    watts = np.full(120, 200.0)
+    assert normalized_power(watts) == pytest.approx(200.0, abs=1e-6)
+
+
+def test_normalized_power_exceeds_simple_average_when_power_varies() -> None:
+    """C'est tout l'intérêt de NP par rapport à une moyenne simple : la
+    puissance^4 pénalise les pics, donc une puissance très variable (même
+    moyenne simple) a un coût physiologique plus élevé, reflété par
+    NP > moyenne arithmétique."""
+    watts = np.tile([50.0] * 30 + [400.0] * 30, 5)  # alterne repos/sprint, 5 fois
+
+    assert normalized_power(watts) > float(np.mean(watts))
+
+
+def test_normalized_power_ignores_windows_overlapping_a_gap() -> None:
+    """Un trou (NaN, ex. perte de capteur) ne doit pas se propager dans
+    tout le résultat : seules les fenêtres de 30s qui touchent le trou
+    sont exclues, pas le stream entier."""
+    watts = np.full(90, 200.0)
+    watts[40:50] = np.nan
+
+    assert normalized_power(watts) == pytest.approx(200.0, abs=1e-6)
+
+
+def test_normalized_power_raises_when_stream_shorter_than_window() -> None:
+    watts = np.full(10, 200.0)  # < 30s, aucune fenêtre complète possible
+    with pytest.raises(ValueError, match="30"):
+        normalized_power(watts)
+
+
+def test_normalized_power_raises_when_no_window_fully_valid() -> None:
+    """Contrairement à mean_maximal_power (qui renvoie NaN pour une courbe
+    MMP agrégée sur plein d'activités, où un trou isolé est acceptable),
+    NP alimente directement un TSS par activité : un NaN silencieux ici
+    corromprait toute la récursion de Banister (T-21) en aval sans qu'on
+    s'en aperçoive. Erreur explicite plutôt qu'une valeur invalide qui se
+    propage."""
+    watts = np.full(60, np.nan)
+    with pytest.raises(ValueError, match="fenêtre"):
+        normalized_power(watts)
+
+
+# ---- training_stress_score (T-21) ------------------------------------------------------------
+
+
+def test_tss_at_threshold_power_for_one_hour_is_100_by_definition() -> None:
+    """Définition de Coggan : 1h pile à la puissance seuil = 100 TSS, le
+    point d'ancrage de toute l'échelle."""
+    tss = training_stress_score(
+        duration_s=3600.0, normalized_power_w=250.0, threshold_power_w=250.0
+    )
+    assert tss == pytest.approx(100.0, abs=1e-6)
+
+
+def test_tss_scales_linearly_with_duration_at_constant_intensity() -> None:
+    tss_1h = training_stress_score(3600.0, 250.0, 250.0)
+    tss_30min = training_stress_score(1800.0, 250.0, 250.0)
+    assert tss_30min == pytest.approx(tss_1h / 2)
+
+
+def test_tss_scales_with_square_of_intensity_factor() -> None:
+    """TSS = durée × IF² × 100/3600 : doubler l'intensité (IF) quadruple le
+    TSS à durée égale — l'effet dominant qui fait qu'une sortie courte et
+    intense peut peser plus lourd qu'une longue sortie tranquille."""
+    tss_at_threshold = training_stress_score(3600.0, 250.0, 250.0)
+    tss_double_intensity = training_stress_score(3600.0, 500.0, 250.0)
+    assert tss_double_intensity == pytest.approx(tss_at_threshold * 4)
+
+
+def test_tss_raises_for_nonpositive_threshold_power() -> None:
+    with pytest.raises(ValueError, match="threshold_power_w"):
+        training_stress_score(3600.0, 250.0, 0.0)
