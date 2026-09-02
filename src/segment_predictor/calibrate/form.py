@@ -4,7 +4,7 @@ réel des activités (T-23).
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 
 import duckdb
 import numpy as np
@@ -154,3 +154,35 @@ def build_form_regression_dataset(
         y.append(point.index)
 
     return np.array(rows), np.array(y), dates
+
+
+DEFAULT_RECENT_WINDOW_DAYS = 90
+
+
+def recent_performance_index_values(
+    conn: duckdb.DuckDBPyConnection,
+    cp_fit: CriticalPowerFit | None = None,
+    window_days: int = DEFAULT_RECENT_WINDOW_DAYS,
+    reference_date: date | None = None,
+    durations_s: Iterable[int] = DEFAULT_CP_FIT_DURATIONS_S,
+) -> list[float]:
+    """Valeurs de l'indice de performance (T-23) des `window_days` derniers
+    jours jusqu'à `reference_date` (aujourd'hui par défaut) — pas tout
+    l'historique : l'indice dérive fortement dans le temps (T-23/T-24,
+    conséquence du CP *fixe* utilisé comme référence), la distribution
+    récente reflète la forme ACTUELLE, pas celle d'il y a plusieurs années.
+    Sert de distribution empirique à échantillonner pour l'incertitude de
+    forme du Monte-Carlo (T-28, `models.uncertainty.propagate_uncertainty`).
+
+    Liste vide si rien dans la fenêtre — pas une erreur ici (c'est
+    `propagate_uncertainty` qui refuse une liste vide, pas cette fonction
+    de lecture).
+    """
+    if window_days <= 0:
+        raise ValueError(f"window_days doit être positif, reçu {window_days}")
+    if reference_date is None:
+        reference_date = date.today()
+
+    cutoff_date = reference_date - timedelta(days=window_days)
+    points = compute_performance_index_series(conn, cp_fit=cp_fit, durations_s=durations_s)
+    return [point.index for point in points if cutoff_date <= point.date <= reference_date]
