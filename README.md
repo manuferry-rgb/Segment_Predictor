@@ -209,6 +209,32 @@ Avec seulement 77 points malgré 9267 `segment_efforts` en base, ce
 calibrage reste basé sur peu de données — à reconsidérer si le tag
 manuel s'étoffe, ou si le vent est intégré et change le résidu.
 
+## Backtest (T-18)
+
+`backtest_cda_crr_from_db` (`calibrate/backtest.py`) évalue la
+calibration ci-dessus honnêtement : split **temporel** (pas aléatoire)
+des mêmes 77 efforts filtrés — les plus anciens calibrent CdA/Crr, les
+plus récents évaluent la prédiction. Un split aléatoire mélangerait
+passé et futur dans le train et donnerait une erreur artificiellement
+optimiste, puisque le modèle "connaîtrait" déjà des efforts postérieurs
+à ceux qu'il prédit — pas une situation réaliste (prédire une fenêtre à
+venir, T-14).
+
+`uv run python scripts/backtest_cda_crr.py` régénère le résultat et le
+graphique.
+
+Dernier résultat officiel (mass=91kg, 2026, split 80/20 par défaut) :
+**erreur absolue médiane = 14.9 s sur 15 efforts de test** (train : 62).
+Le nuage de points prédit vs réel (`data/backtest_t18.png`, gitignoré —
+artefact dérivé, pas une donnée d'entrée) suit bien la diagonale y=x sur
+toute la plage observée (~200s à ~790s), sans dérive systématique
+visible à l'œil (le modèle ne surestime ni ne sous-estime plus sur les
+longs efforts que sur les courts).
+
+15 points de test reste peu pour juger de la robustesse dans le temps —
+comme pour T-17, à reconsidérer avec plus de tags `solo`/`pr_rank`
+disponibles.
+
 ### Limites connues
 
 - Une seule activité (`10066651328`) a 63 échantillons `heartrate = -1`
