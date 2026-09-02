@@ -21,11 +21,13 @@ def create_raw_views(
     segments_raw_dir: Path,
     weather_raw_dir: Path | None = None,
     activity_details_raw_dir: Path | None = None,
+    wellness_raw_dir: Path | None = None,
 ) -> None:
     """(Re)crée le schéma `raw` et ses vues, chacune sur son dossier d'ingest.
 
-    `weather_raw_dir`/`activity_details_raw_dir` sont optionnels (T-14 et
-    T-07b sont postérieurs à T-07) : leurs vues ne sont créées que si fournis.
+    `weather_raw_dir`/`activity_details_raw_dir`/`wellness_raw_dir` sont
+    optionnels (T-14, T-07b et T-22 sont postérieurs à T-07) : leurs vues
+    ne sont créées que si fournis.
 
     Un dossier pas encore peuplé (ex. un fetch pas encore lancé) ne fait
     pas planter la construction : `read_parquet` vérifie le glob dès la
@@ -44,6 +46,8 @@ def create_raw_views(
         sources["weather"] = weather_raw_dir
     if activity_details_raw_dir is not None:
         sources["activity_details"] = activity_details_raw_dir
+    if wellness_raw_dir is not None:
+        sources["wellness"] = wellness_raw_dir
     for view_name, raw_dir in sources.items():
         if not raw_dir.exists() or not any(raw_dir.glob("*.parquet")):
             continue
