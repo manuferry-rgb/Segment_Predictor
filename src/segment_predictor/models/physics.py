@@ -1,9 +1,11 @@
-"""Équation de puissance du cycliste et densité de l'air.
+"""Équation de puissance du cycliste, densité de l'air, et résolution inverse.
 
 Fonctions pures — aucun I/O, aucune dépendance à ingest/storage.
 """
 
 import math
+
+from scipy.optimize import brentq
 
 # Gravité standard, valeur exacte par définition internationale.
 STANDARD_GRAVITY_MS2 = 9.80665
@@ -84,6 +86,50 @@ def cyclist_power_required(
 
     total_force_n = gravity_force_n + rolling_force_n + aero_force_n
     return total_force_n * speed_ms
+
+
+def cyclist_speed_from_power(
+    power_w: float,
+    grade: float,
+    headwind_speed_ms: float,
+    mass_kg: float,
+    cda_m2: float,
+    crr: float,
+    air_density_kg_m3: float,
+    speed_bounds_ms: tuple[float, float] = (0.01, 40.0),
+) -> float:
+    """Résout cyclist_power_required(v, ...) = power_w pour v, par la méthode de Brent.
+
+    Pas de solution analytique simple : quand headwind=0, P(v) est cubique
+    en v (le terme aéro en v³) ; avec du vent c'est pire. Brent encadre la
+    racine par dichotomie/interpolation plutôt que d'inverser l'équation
+    symboliquement.
+
+    Suppose P(v) - power_w change de signe une seule fois sur
+    `speed_bounds_ms`. Vrai pour `power_w > 0` (le cas d'usage : combien de
+    vitesse pour pédaler à X watts), y compris en légère descente — à v->0,
+    P(v)->0 toujours (P = F(v)·v, et c'est v qui l'emporte), donc pour
+    power_w > 0 il n'y a qu'un franchissement. Pas garanti pour power_w <= 0
+    (vitesse de roue libre en forte descente) : hors périmètre, une
+    `ValueError` remonte plutôt qu'une racine non pertinente.
+    """
+
+    def residual(speed_ms: float) -> float:
+        return (
+            cyclist_power_required(
+                speed_ms, grade, headwind_speed_ms, mass_kg, cda_m2, crr, air_density_kg_m3
+            )
+            - power_w
+        )
+
+    lo, hi = speed_bounds_ms
+    try:
+        return brentq(residual, lo, hi)
+    except ValueError as error:
+        raise ValueError(
+            f"pas de vitesse solution dans {speed_bounds_ms} m/s pour {power_w}W "
+            f"(pente={grade}, vent={headwind_speed_ms}m/s) : {error}"
+        ) from error
 
 
 def _sign(value: float) -> float:

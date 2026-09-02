@@ -1,4 +1,5 @@
-"""Tests de l'équation de puissance du cycliste et de la densité de l'air (T-10).
+"""Tests de l'équation de puissance du cycliste, de la densité de l'air (T-10)
+et de la résolution inverse puissance -> vitesse (T-11).
 
 Fonctions pures, aucun I/O. Chaque valeur attendue est recalculée
 indépendamment dans le test (pas juste comparée à elle-même) — c'est ce
@@ -7,12 +8,14 @@ qui rend les cas "vérifiables à la main".
 
 import math
 
+import numpy as np
 import pytest
 
 from segment_predictor.models.physics import (
     STANDARD_GRAVITY_MS2,
     air_density,
     cyclist_power_required,
+    cyclist_speed_from_power,
 )
 
 # ---- cyclist_power_required ------------------------------------------------------------
@@ -146,3 +149,84 @@ def test_air_density_decreases_when_warmer() -> None:
     density_cold = air_density(altitude_m=500.0, temperature_k=273.15)  # 0°C
     density_hot = air_density(altitude_m=500.0, temperature_k=308.15)  # 35°C
     assert density_hot < density_cold
+
+
+# ---- cyclist_speed_from_power (T-11) ----------------------------------------------------
+
+
+def test_speed_from_power_round_trip_on_random_cases() -> None:
+    """vitesse -> puissance -> vitesse doit retomber sur ses pieds, sur des cas
+    tirés aléatoirement (graine fixe, plages physiquement réalistes).
+
+    Sur une pente négative, P(v) peut être négative à basse vitesse (roue
+    libre, hors périmètre documenté de cyclist_speed_from_power) : un premier
+    essai avec ces bornes l'a révélé concrètement (grade=-2.6%, v=2m/s ->
+    P≈-61W). On filtre donc les tirages où la puissance directe n'est pas
+    positive plutôt que de deviner des bornes de pente qui l'excluent a
+    priori — c'est le périmètre réel de la fonction qui décide, pas une
+    borne arbitraire choisie sans vérifier.
+    """
+    rng = np.random.default_rng(seed=123)
+    n_candidates = 500
+
+    speeds_ms = rng.uniform(2.0, 15.0, n_candidates)
+    grades = rng.uniform(-0.03, 0.12, n_candidates)
+    headwinds_ms = rng.uniform(-3.0, 3.0, n_candidates)
+    masses_kg = rng.uniform(60.0, 100.0, n_candidates)
+    cdas_m2 = rng.uniform(0.25, 0.40, n_candidates)
+    crrs = rng.uniform(0.003, 0.008, n_candidates)
+    air_densities = rng.uniform(1.0, 1.25, n_candidates)
+
+    n_valid = 0
+    for i in range(n_candidates):
+        power_w = cyclist_power_required(
+            speeds_ms[i],
+            grades[i],
+            headwinds_ms[i],
+            masses_kg[i],
+            cdas_m2[i],
+            crrs[i],
+            air_densities[i],
+        )
+        if power_w <= 0:
+            continue  # roue libre pour ce tirage : hors périmètre, on saute
+
+        n_valid += 1
+        recovered_speed_ms = cyclist_speed_from_power(
+            power_w, grades[i], headwinds_ms[i], masses_kg[i], cdas_m2[i], crrs[i], air_densities[i]
+        )
+        assert recovered_speed_ms == pytest.approx(speeds_ms[i], rel=1e-6), (
+            f"trial {i}: v={speeds_ms[i]}, grade={grades[i]}, headwind={headwinds_ms[i]}"
+        )
+
+    assert n_valid >= 200  # assez de cas valides pour que le test soit significatif
+
+
+def test_speed_from_power_flat_no_wind_matches_hand_check() -> None:
+    """Cas simple, plat sans vent : P = Crr·m·g·v + 0.5·ρ·CdA·v³ (cubique en v)."""
+    mass_kg, crr, cda_m2, air_density_kg_m3 = 80.0, 0.005, 0.30, 1.2
+    true_speed_ms = 9.0
+    power_w = cyclist_power_required(
+        true_speed_ms, 0.0, 0.0, mass_kg, cda_m2, crr, air_density_kg_m3
+    )
+
+    recovered_speed_ms = cyclist_speed_from_power(
+        power_w, 0.0, 0.0, mass_kg, cda_m2, crr, air_density_kg_m3
+    )
+
+    assert recovered_speed_ms == pytest.approx(true_speed_ms, rel=1e-8)
+
+
+def test_speed_from_power_raises_when_no_root_in_bounds() -> None:
+    """Puissance hors de portée des bornes de recherche : erreur explicite, pas
+    une vitesse fausse."""
+    with pytest.raises(ValueError, match="vitesse"):
+        cyclist_speed_from_power(
+            power_w=100_000.0,  # bien au-delà de ce qu'atteint 40 m/s
+            grade=0.0,
+            headwind_speed_ms=0.0,
+            mass_kg=80.0,
+            cda_m2=0.30,
+            crr=0.005,
+            air_density_kg_m3=1.2,
+        )
