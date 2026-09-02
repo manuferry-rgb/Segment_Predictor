@@ -170,6 +170,45 @@ Un grand écart peut donc venir d'un vrai drafting, d'un bon jour, ou
 juste des approximations ci-dessus — à vérifier au cas par cas, pas à
 prendre pour argent comptant.
 
+## Calibration CdA/Crr (T-17)
+
+`calibrate_cda_crr_from_db` (`calibrate/cda_crr.py`) ajuste CdA et Crr
+en minimisant l'écart relatif entre `simulate_segment_time` (T-13) et le
+temps réel, sur les efforts tagués `solo` dans
+`annotations/draft_status.csv`. Deux filtres, trouvés nécessaires en
+conditions réelles (320 efforts solo bruts), en plus du tri manuel
+solo/drafted :
+
+- **Plage de validité du modèle CP** (`cp_fit.duration_range_s`,
+  180–1200s) : sous 180s, `CP + W'/T` diverge vers l'infini quand T→0
+  (déjà documenté en T-09) et surestime largement la puissance
+  soutenable — inclure ces efforts ne calibre pas un mauvais CdA/Crr, ça
+  fait plafonner l'optimiseur à ses bornes pour compenser un biais de
+  durée qu'aucun CdA/Crr ne peut corriger.
+- **`pr_rank` non nul** : le modèle prédit le temps *atteignable en
+  effort maximal*. Un effort solo à rythme d'entraînement (la majorité
+  des 320, une fois le filtre durée appliqué) n'a aucune raison de s'en
+  approcher. `pr_rank` (position au classement perso Strava sur ce
+  segment) sert de proxy simple pour "effort quasi maximal" — une
+  approximation documentée, pas une vraie mesure d'intensité (VO2/FTP) :
+  un effort peut être un record perso sans être poussé à bloc, et
+  inversement sur un segment rarement emprunté.
+
+Dernier résultat officiel (mass=91kg, 2026) : **CdA=0.441 m², Crr=0.0105,
+RMSE relative=8.7%, n=77** (189 exclus hors plage durée, 54 exclus faute
+de `pr_rank`). Crr converge à 0.0105 quelle que soit la largeur des
+bornes testées (vérifié jusqu'à 0.03) — ce n'est pas un plafonnement
+artificiel, `DEFAULT_CRR_BOUNDS` a été élargi à `(0.002, 0.012)` en
+conséquence pour ne plus friser sa borne. Cette valeur reste un peu
+élevée pour du bitume lisse (0.003–0.005 typique) : plausiblement le
+revêtement réel de mes segments, et/ou un résidu de vent absorbé par Crr
+plutôt que CdA — **le vent n'est pas encore branché dans cette
+calibration** (T-15 existe, pas intégré ici ; piste pour T-19).
+
+Avec seulement 77 points malgré 9267 `segment_efforts` en base, ce
+calibrage reste basé sur peu de données — à reconsidérer si le tag
+manuel s'étoffe, ou si le vent est intégré et change le résidu.
+
 ### Limites connues
 
 - Une seule activité (`10066651328`) a 63 échantillons `heartrate = -1`
