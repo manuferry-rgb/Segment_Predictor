@@ -12,6 +12,7 @@ from segment_predictor.ingest.open_meteo import (
     WeatherZoneRequest,
     compute_weather_zones,
     fetch_and_store_weather_zones,
+    get_forecast_weather,
     get_historical_weather,
     save_weather_zone,
     zone_filename,
@@ -108,6 +109,60 @@ def test_get_historical_weather_retries_on_429() -> None:
     )
 
     assert sleep_calls == [2.0]
+
+
+# ---- get_forecast_weather (T-27) -----------------------------------------------------------
+
+
+def test_get_forecast_weather_requests_the_right_params_and_returns_raw_json() -> None:
+    fake = _fake_weather()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/forecast"
+        assert request.url.params["latitude"] == "47.7"
+        assert request.url.params["longitude"] == "7.4"
+        assert request.url.params["forecast_days"] == "10"
+        # "auto", pas "UTC" comme l'archive : l'utilisateur doit voir
+        # "jeudi 17h" en heure locale, pas en UTC (T-27).
+        assert request.url.params["timezone"] == "auto"
+        assert "wind_speed_10m" in request.url.params["hourly"]
+        return httpx.Response(200, json=fake)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    weather = get_forecast_weather(client, 47.7, 7.4, forecast_days=10, sleep=NO_SLEEP)
+
+    assert weather == fake
+
+
+def test_get_forecast_weather_retries_on_429() -> None:
+    responses = [
+        httpx.Response(429, headers={"Retry-After": "4"}),
+        httpx.Response(200, json=_fake_weather()),
+    ]
+    call_count = {"value": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        response = responses[call_count["value"]]
+        call_count["value"] += 1
+        return response
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    sleep_calls = []
+
+    get_forecast_weather(client, 47.7, 7.4, forecast_days=10, sleep=lambda s: sleep_calls.append(s))
+
+    assert sleep_calls == [4.0]
+
+
+def test_get_forecast_weather_raises_on_forecast_days_out_of_range() -> None:
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={})))
+    with pytest.raises(ValueError, match="forecast_days"):
+        get_forecast_weather(client, 47.7, 7.4, forecast_days=0, sleep=NO_SLEEP)
+    with pytest.raises(ValueError, match="forecast_days"):
+        get_forecast_weather(
+            client, 47.7, 7.4, forecast_days=17, sleep=NO_SLEEP
+        )  # max Open-Meteo : 16
 
 
 # ---- save_weather_zone / fetch_and_store_weather_zones -----------------------------------
