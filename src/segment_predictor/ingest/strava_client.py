@@ -20,6 +20,13 @@ STRAVA_API_BASE_URL = "https://www.strava.com/api/v3"
 DEFAULT_RATE_LIMIT_BACKOFF_S = 900.0  # durée de la fenêtre courte de Strava
 MAX_RATE_LIMIT_RETRIES = 5
 
+# Incident réseau transitoire (timeout, connexion coupée) : rien à voir avec
+# le quota, une courte pause suffit. Trouvé en conditions réelles sur T-07b —
+# ~500 requêtes séquentielles sans retry sur ce cas, un httpx.ReadTimeout a
+# fait planter tout le script au bout de 311/497.
+NETWORK_ERROR_BACKOFF_S = 5.0
+MAX_NETWORK_ERROR_RETRIES = 3
+
 
 @dataclass(frozen=True)
 class RateLimitStatus:
@@ -62,8 +69,17 @@ def authenticated_get(
     headers = {"Authorization": f"Bearer {access_token}"}
 
     attempts = 0
+    network_error_attempts = 0
     while True:
-        response = http_client.get(url, headers=headers, params=params)
+        try:
+            response = http_client.get(url, headers=headers, params=params)
+        except httpx.TransportError:
+            network_error_attempts += 1
+            if network_error_attempts > MAX_NETWORK_ERROR_RETRIES:
+                raise  # incident réseau persistant -> pas juste un hoquet, on abandonne
+            sleep(NETWORK_ERROR_BACKOFF_S)
+            continue
+
         if response.status_code != 429:
             response.raise_for_status()
             return response
@@ -72,7 +88,15 @@ def authenticated_get(
         if attempts > MAX_RATE_LIMIT_RETRIES:
             response.raise_for_status()  # toujours 429 -> on abandonne, l'erreur remonte
 
-        wait_s = float(response.headers.get("Retry-After", DEFAULT_RATE_LIMIT_BACKOFF_S))
+        # Retry-After vient de Strava, pas de nous : rien ne garantit qu'il
+        # reste raisonnable (trouvé en conditions réelles sur T-07b — un
+        # sleep() non plafonné sur cette valeur a bloqué le script ~10-30 min
+        # à deux reprises, sans rapport avec le quota réel une fois vérifié
+        # indépendamment). Plafonné à notre propre fenêtre de repli.
+        wait_s = min(
+            float(response.headers.get("Retry-After", DEFAULT_RATE_LIMIT_BACKOFF_S)),
+            DEFAULT_RATE_LIMIT_BACKOFF_S,
+        )
         sleep(wait_s)
 
 

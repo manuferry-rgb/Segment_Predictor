@@ -96,6 +96,33 @@ def test_authenticated_get_falls_back_to_default_backoff_without_retry_after_hea
     assert sleep_calls == [900.0]
 
 
+def test_authenticated_get_caps_an_excessive_retry_after_value() -> None:
+    """Trouvé en conditions réelles sur T-07b : un sleep() non plafonné sur une
+    donnée externe (Retry-After) a bloqué le script ~10-30 min à deux reprises,
+    sans rapport avec le quota réel (vérifié indépendamment, quota sain).
+    Retry-After n'est pas garanti raisonnable ; on ne lui fait pas confiance
+    au-delà de notre propre fenêtre de repli."""
+    responses = [
+        httpx.Response(429, headers={"Retry-After": "7200"}),  # 2h, largement excessif
+        httpx.Response(200, json={"ok": True}),
+    ]
+    call_count = {"value": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        response = responses[call_count["value"]]
+        call_count["value"] += 1
+        return response
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    sleep_calls = []
+
+    authenticated_get(
+        client, "/athlete", "tok123", sleep=lambda seconds: sleep_calls.append(seconds)
+    )
+
+    assert sleep_calls == [900.0]  # plafonné, pas 7200
+
+
 def test_authenticated_get_gives_up_after_max_retries() -> None:
     """Toujours 429 : l'erreur HTTP doit remonter au bout d'un moment, pas de boucle infinie."""
 
@@ -119,3 +146,38 @@ def test_authenticated_get_raises_on_other_http_errors_without_retrying() -> Non
 
     with pytest.raises(httpx.HTTPStatusError):
         authenticated_get(client, "/athlete", "tok123", sleep=NO_SLEEP)
+
+
+def test_authenticated_get_retries_on_transient_network_error() -> None:
+    """Un incident réseau transitoire (timeout, connexion coupée) n'est pas un
+    429 : trouvé en conditions réelles sur T-07b (~500 requêtes séquentielles,
+    un httpx.ReadTimeout a fait planter tout le script au bout de 311/497)."""
+    call_count = {"value": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count["value"] += 1
+        if call_count["value"] == 1:
+            raise httpx.ReadTimeout("timed out", request=request)
+        return httpx.Response(200, json={"ok": True})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    sleep_calls = []
+
+    result = authenticated_get(
+        client, "/athlete", "tok123", sleep=lambda seconds: sleep_calls.append(seconds)
+    )
+
+    assert result.json() == {"ok": True}
+    assert call_count["value"] == 2
+    assert len(sleep_calls) == 1
+    assert sleep_calls[0] < 60  # backoff court, pas la temporisation de quota (900s)
+
+
+def test_authenticated_get_gives_up_after_repeated_network_errors() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("timed out", request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    with pytest.raises(httpx.TransportError):
+        authenticated_get(client, "/athlete", "tok123", sleep=lambda s: None)
