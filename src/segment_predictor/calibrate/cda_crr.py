@@ -7,6 +7,7 @@ réellement plus faible) — c'est tout l'intérêt du tri fait en T-16.
 
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
 import duckdb
 import numpy as np
@@ -114,6 +115,49 @@ def fit_cda_crr(
     )
 
 
+def load_filtered_solo_efforts(
+    conn: duckdb.DuckDBPyConnection, csv_path: Path, cp_fit: CriticalPowerFit
+) -> tuple[list[tuple[Any, float, float, float]], int, int]:
+    """Efforts tagués `solo` dans `csv_path`, dans la plage de validité du
+    modèle CP et avec un `pr_rank` non nul — voir `calibrate_cda_crr_from_db`
+    pour le raisonnement complet des deux filtres. Chaque ligne retournée :
+    (start_date, distance_m, average_grade, elapsed_time_s).
+
+    Retourne aussi les deux compteurs d'exclusion (durée, pr_rank), dans cet
+    ordre. Partagé avec `calibrate/backtest.py` (T-18) pour ne pas dupliquer
+    ces filtres — le backtest doit s'évaluer sur exactement les mêmes
+    efforts que la calibration officielle.
+    """
+    annotations = load_existing_annotations(csv_path)
+    solo_effort_ids = [effort_id for effort_id, status in annotations.items() if status == "solo"]
+    if not solo_effort_ids:
+        raise ValueError(
+            f"aucun effort tagué 'solo' dans {csv_path} — rien à calibrer. "
+            "Tague au moins 2 lignes du CSV avant de relancer (voir README)."
+        )
+
+    placeholders = ",".join("?" * len(solo_effort_ids))
+    rows = conn.execute(
+        f"SELECT se.start_date, s.distance_m, s.average_grade, se.elapsed_time_s, se.pr_rank "
+        f"FROM segment_efforts se JOIN segments s ON s.id = se.segment_id "
+        f"WHERE se.id IN ({placeholders})",
+        solo_effort_ids,
+    ).fetchall()
+
+    range_min_s, range_max_s = cp_fit.duration_range_s
+    in_range = [row for row in rows if range_min_s <= row[3] <= range_max_s]
+    excluded_duration_count = len(rows) - len(in_range)
+
+    with_pr_rank = [row for row in in_range if row[4] is not None]
+    excluded_not_a_pr_count = len(in_range) - len(with_pr_rank)
+
+    efforts = [
+        (start_date, distance_m, average_grade, time_s)
+        for start_date, distance_m, average_grade, time_s, _ in with_pr_rank
+    ]
+    return efforts, excluded_duration_count, excluded_not_a_pr_count
+
+
 def calibrate_cda_crr_from_db(
     conn: duckdb.DuckDBPyConnection,
     csv_path: Path,
@@ -149,31 +193,12 @@ def calibrate_cda_crr_from_db(
     if cp_fit is None:
         cp_fit = fit_current_cp(conn)
 
-    annotations = load_existing_annotations(csv_path)
-    solo_effort_ids = [effort_id for effort_id, status in annotations.items() if status == "solo"]
-    if not solo_effort_ids:
-        raise ValueError(
-            f"aucun effort tagué 'solo' dans {csv_path} — rien à calibrer. "
-            "Tague au moins 2 lignes du CSV avant de relancer (voir README)."
-        )
-
-    placeholders = ",".join("?" * len(solo_effort_ids))
-    rows = conn.execute(
-        f"SELECT s.distance_m, s.average_grade, se.elapsed_time_s, se.pr_rank "
-        f"FROM segment_efforts se JOIN segments s ON s.id = se.segment_id "
-        f"WHERE se.id IN ({placeholders})",
-        solo_effort_ids,
-    ).fetchall()
-
-    range_min_s, range_max_s = cp_fit.duration_range_s
-    in_range = [row for row in rows if range_min_s <= row[2] <= range_max_s]
-    excluded_duration_count = len(rows) - len(in_range)
-
-    with_pr_rank = [row for row in in_range if row[3] is not None]
-    excluded_not_a_pr_count = len(in_range) - len(with_pr_rank)
-
+    efforts_with_dates, excluded_duration_count, excluded_not_a_pr_count = (
+        load_filtered_solo_efforts(conn, csv_path, cp_fit)
+    )
     efforts = [
-        (distance_m, average_grade, time_s) for distance_m, average_grade, time_s, _ in with_pr_rank
+        (distance_m, average_grade, time_s)
+        for _, distance_m, average_grade, time_s in efforts_with_dates
     ]
     fit = fit_cda_crr(efforts, cp_fit, mass_kg)
     return replace(
