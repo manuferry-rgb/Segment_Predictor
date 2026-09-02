@@ -1,5 +1,5 @@
-"""Tests de l'équation de puissance du cycliste, de la densité de l'air (T-10)
-et de la résolution inverse puissance -> vitesse (T-11).
+"""Tests de l'équation de puissance du cycliste, de la densité de l'air (T-10),
+de la résolution inverse puissance -> vitesse (T-11) et du vent effectif (T-15).
 
 Fonctions pures, aucun I/O. Chaque valeur attendue est recalculée
 indépendamment dans le test (pas juste comparée à elle-même) — c'est ce
@@ -16,6 +16,7 @@ from segment_predictor.models.physics import (
     air_density,
     cyclist_power_required,
     cyclist_speed_from_power,
+    effective_headwind_speed_ms,
 )
 
 # ---- cyclist_power_required ------------------------------------------------------------
@@ -230,3 +231,64 @@ def test_speed_from_power_raises_when_no_root_in_bounds() -> None:
             crr=0.005,
             air_density_kg_m3=1.2,
         )
+
+
+# ---- effective_headwind_speed_ms (T-15) --------------------------------------------------
+
+_NORTH, _EAST, _SOUTH, _WEST = 0.0, math.pi / 2, math.pi, 3 * math.pi / 2
+
+
+def test_effective_headwind_pure_headwind() -> None:
+    """Je vais plein nord, le vent VIENT du nord -> il souffle droit dans ma figure."""
+    headwind = effective_headwind_speed_ms(
+        wind_speed_ms=8.0, wind_direction_rad=_NORTH, heading_rad=_NORTH
+    )
+    assert headwind == pytest.approx(8.0)
+
+
+def test_effective_headwind_pure_tailwind() -> None:
+    """Je vais plein nord, le vent VIENT du sud -> il souffle vers le nord, dans mon dos."""
+    headwind = effective_headwind_speed_ms(
+        wind_speed_ms=8.0, wind_direction_rad=_SOUTH, heading_rad=_NORTH
+    )
+    assert headwind == pytest.approx(-8.0)
+
+
+def test_effective_headwind_pure_crosswind() -> None:
+    """Je vais plein nord, le vent VIENT de l'est -> perpendiculaire, aucune composante face/dos."""
+    headwind = effective_headwind_speed_ms(
+        wind_speed_ms=8.0, wind_direction_rad=_EAST, heading_rad=_NORTH
+    )
+    assert headwind == pytest.approx(0.0, abs=1e-9)
+
+
+def test_effective_headwind_45_degrees() -> None:
+    """Vent VIENT du nord-est (45°), je vais plein nord -> composante = vitesse·cos(45°)."""
+    headwind = effective_headwind_speed_ms(
+        wind_speed_ms=10.0, wind_direction_rad=math.pi / 4, heading_rad=_NORTH
+    )
+    assert headwind == pytest.approx(10.0 * (math.sqrt(2) / 2))
+
+
+def test_effective_headwind_raises_on_negative_wind_speed() -> None:
+    """Une vitesse est une norme, jamais négative — c'est wind_direction_rad qui porte le sens."""
+    with pytest.raises(ValueError, match="wind_speed_ms"):
+        effective_headwind_speed_ms(wind_speed_ms=-1.0, wind_direction_rad=0.0, heading_rad=0.0)
+
+
+def test_effective_headwind_feeds_correctly_into_cyclist_power_required() -> None:
+    """Vent arrière (vient du sud, je vais au nord) plus fort que ma vitesse au
+    sol : la vitesse d'air relative doit devenir négative et l'aéro doit
+    assister plutôt que freiner — même comportement que le test T-10
+    équivalent, mais en passant par la fonction de projection cette fois."""
+    speed_ms = 5.0
+    headwind = effective_headwind_speed_ms(
+        wind_speed_ms=15.0, wind_direction_rad=_SOUTH, heading_rad=_NORTH
+    )
+    assert headwind == pytest.approx(-15.0)
+    assert speed_ms + headwind < 0  # vitesse d'air relative négative, confirmé
+
+    power_w = cyclist_power_required(speed_ms, 0.0, headwind, 80.0, 0.30, 0.004, 1.2)
+
+    rolling_only_w = 0.004 * 80.0 * STANDARD_GRAVITY_MS2 * speed_ms
+    assert power_w < rolling_only_w  # l'aéro pousse, la puissance nécessaire baisse

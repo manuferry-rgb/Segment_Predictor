@@ -138,3 +138,35 @@ def _sign(value: float) -> float:
     if value < 0:
         return -1.0
     return 0.0
+
+
+def effective_headwind_speed_ms(
+    wind_speed_ms: float, wind_direction_rad: float, heading_rad: float
+) -> float:
+    """Projette le vent sur le cap de déplacement : composante de vent de face.
+
+    Deux conventions à ne pas confondre (piégeuses, d'où ce commentaire) :
+    - `wind_direction_rad` (Open-Meteo, T-14) : direction D'OÙ VIENT le vent
+      (convention météo standard) — 0 = vient du nord, croît vers l'est.
+    - `heading_rad` (T-12) : direction OÙ JE VAIS (cap de déplacement) —
+      mêmes axes (0 = nord, croît vers l'est), mais l'un est une origine,
+      l'autre une destination. Les confondre inverse le signe du résultat.
+
+    Un vent qui VIENT DE la direction où je vais souffle droit dans ma
+    figure : vent de face pur quand wind_direction_rad == heading_rad,
+    d'où cos(wind_direction_rad - heading_rad) plutôt qu'une autre
+    combinaison de signes.
+
+    Résultat positif = vent de face, négatif = vent arrière — même
+    convention que `headwind_speed_ms` dans cyclist_power_required (T-10),
+    donc branchable directement dessus. Un vent arrière plus fort que la
+    vitesse au sol donne une vitesse d'air relative négative une fois
+    sommé à `speed_ms` côté cyclist_power_required, qui la gère déjà
+    (le terme aéro bascule en poussée via `_sign`) — rien de spécial à
+    faire ici, cette fonction ne fait que projeter, pas de vitesse au sol
+    en jeu.
+    """
+    if wind_speed_ms < 0:
+        raise ValueError(f"wind_speed_ms doit être positif ou nul, reçu {wind_speed_ms}")
+
+    return wind_speed_ms * math.cos(wind_direction_rad - heading_rad)
