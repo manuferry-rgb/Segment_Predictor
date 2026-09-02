@@ -9,6 +9,7 @@ import pytest
 from segment_predictor.calibrate.form import (
     build_form_regression_dataset,
     compute_performance_index_series,
+    recent_performance_index_values,
 )
 from segment_predictor.calibrate.training_load import compute_training_load_from_db
 from segment_predictor.models.power import CriticalPowerFit
@@ -160,3 +161,59 @@ def test_build_form_regression_dataset_raises_when_no_index_points() -> None:
 
     with pytest.raises(ValueError, match="indice de performance"):
         build_form_regression_dataset(conn, cp_fit=_CP_FIT, durations_s=[60])
+
+
+# ---- recent_performance_index_values (T-28) ----------------------------------------------------
+
+
+def test_recent_performance_index_values_excludes_points_older_than_the_window() -> None:
+    activities = [
+        _activity(1, datetime(2024, 1, 1), moving_time_s=300),  # trop ancien
+        _activity(2, datetime(2024, 5, 1), moving_time_s=300),  # dans la fenêtre
+    ]
+    streams = _flat_stream_rows(1, 300.0, 300) + _flat_stream_rows(2, 305.0, 300)
+    conn = _make_db(activities, streams)
+
+    values = recent_performance_index_values(
+        conn,
+        cp_fit=_CP_FIT,
+        window_days=90,
+        reference_date=date(2024, 5, 15),
+        durations_s=[300],
+    )
+
+    index_points = compute_performance_index_series(conn, cp_fit=_CP_FIT, durations_s=[300])
+    expected = [p.index for p in index_points if p.date == date(2024, 5, 1)]
+    assert values == pytest.approx(expected)
+    assert len(values) == 1  # pas l'activité de janvier
+
+
+def test_recent_performance_index_values_defaults_reference_date_to_today() -> None:
+    activities = [_activity(1, datetime.now(), moving_time_s=300)]
+    streams = _flat_stream_rows(1, 300.0, 300)
+    conn = _make_db(activities, streams)
+
+    values = recent_performance_index_values(conn, cp_fit=_CP_FIT, durations_s=[300])
+
+    assert len(values) == 1
+
+
+def test_recent_performance_index_values_returns_empty_list_outside_window() -> None:
+    activities = [_activity(1, datetime(2020, 1, 1), moving_time_s=300)]
+    streams = _flat_stream_rows(1, 300.0, 300)
+    conn = _make_db(activities, streams)
+
+    values = recent_performance_index_values(
+        conn, cp_fit=_CP_FIT, window_days=90, reference_date=date(2024, 5, 15), durations_s=[300]
+    )
+
+    assert values == []
+
+
+def test_recent_performance_index_values_raises_on_non_positive_window() -> None:
+    activities = [_activity(1, datetime(2024, 1, 1), moving_time_s=300)]
+    streams = _flat_stream_rows(1, 300.0, 300)
+    conn = _make_db(activities, streams)
+
+    with pytest.raises(ValueError, match="window_days"):
+        recent_performance_index_values(conn, cp_fit=_CP_FIT, window_days=0)

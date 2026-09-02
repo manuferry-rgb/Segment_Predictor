@@ -40,6 +40,7 @@ class ForecastWindow:
     time: datetime
     predicted_time_s: float
     wind_speed_ms: float
+    wind_direction_rad: float
     temperature_k: float
 
 
@@ -103,6 +104,7 @@ def rank_forecast_windows(
                 time=time,
                 predicted_time_s=predicted_time_s,
                 wind_speed_ms=wind_speed_ms,
+                wind_direction_rad=wind_direction_rad,
                 temperature_k=temperature_k,
             )
         )

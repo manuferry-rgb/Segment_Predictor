@@ -183,6 +183,14 @@ class CriticalPowerFit:
     dans l'espace travail-temps utilisé pour le fit lui-même — sinon il
     mesurerait la qualité de l'ajustement sur une grandeur dérivée (le
     travail), pas sur ce qu'on veut vraiment évaluer (la puissance).
+
+    `cp_watts_std`/`w_prime_joules_std` (T-28) : écarts-types issus de la
+    matrice de covariance de la même régression linéaire (voir
+    fit_critical_power) — pas une nouvelle méthode statistique, juste la
+    covariance qu'un fit aux moindres carrés produit déjà. Par défaut à
+    0.0 (pas d'incertitude connue) pour rester compatible avec les tests
+    existants qui construisent un CriticalPowerFit à la main sans s'en
+    soucier.
     """
 
     cp_watts: float
@@ -190,6 +198,8 @@ class CriticalPowerFit:
     r_squared: float
     n_points: int
     duration_range_s: tuple[int, int]
+    cp_watts_std: float = 0.0
+    w_prime_joules_std: float = 0.0
 
 
 def fit_critical_power(
@@ -233,7 +243,12 @@ def fit_critical_power(
         )
 
     total_work = p * t  # travail total (J) fourni pendant t secondes à puissance p
-    cp, w_prime = np.polyfit(t, total_work, 1)  # pente = CP, ordonnée à l'origine = W'
+    # cov=True (T-28) : matrice de covariance de (CP, W') gratuite depuis
+    # cette même régression — pas une méthode séparée, np.polyfit la
+    # calcule déjà en interne pour son propre usage interne (résidus).
+    (cp, w_prime), cov = np.polyfit(t, total_work, 1, cov=True)  # pente = CP, ordonnée = W'
+    cp_watts_std = float(np.sqrt(cov[0, 0]))
+    w_prime_joules_std = float(np.sqrt(cov[1, 1]))
 
     predicted_p = cp + w_prime / t
     residuals = p - predicted_p
@@ -247,4 +262,6 @@ def fit_critical_power(
         r_squared=r_squared,
         n_points=len(t),
         duration_range_s=(int(range_min), int(range_max)),
+        cp_watts_std=cp_watts_std,
+        w_prime_joules_std=w_prime_joules_std,
     )

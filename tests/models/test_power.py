@@ -182,6 +182,42 @@ def test_fit_recovers_exact_cp_and_w_prime_from_noiseless_data() -> None:
     assert fit.duration_range_s == (180, 1200)
 
 
+def test_fit_reports_near_zero_uncertainty_on_a_noiseless_fit() -> None:
+    """Un ajustement parfait (tous les points pile sur l'hyperbole) a une
+    covariance quasi nulle — vérifié directement (pas de NaN, pas de
+    valeur inventée quand les résidus sont nuls)."""
+    durations = np.array([180.0, 300.0, 600.0, 900.0, 1200.0])
+    mmp = _hyperbola(durations, 250.0, 20_000.0)
+
+    fit = fit_critical_power(durations, mmp)
+
+    assert fit.cp_watts_std == pytest.approx(0.0, abs=1e-6)
+    assert fit.w_prime_joules_std == pytest.approx(0.0, abs=1e-3)
+
+
+def test_fit_reports_uncertainty_matching_independent_polyfit_covariance() -> None:
+    """T-28 : l'écart-type de CP/W' vient de la covariance de la régression
+    déjà utilisée pour le fit (np.polyfit(..., cov=True)) — recalculé ici
+    indépendamment de fit_critical_power, pas re-dérivé de son
+    implémentation."""
+    true_cp, true_w_prime = 280.0, 18_000.0
+    durations = np.array([180.0, 240.0, 300.0, 420.0, 600.0, 900.0, 1200.0])
+    mmp = _hyperbola(durations, true_cp, true_w_prime)
+    rng = np.random.default_rng(7)
+    noisy_mmp = mmp + rng.normal(loc=0.0, scale=3.0, size=mmp.shape)
+
+    fit = fit_critical_power(durations, noisy_mmp)
+
+    total_work = noisy_mmp * durations
+    _, cov = np.polyfit(durations, total_work, 1, cov=True)
+    expected_cp_std = float(np.sqrt(cov[0, 0]))
+    expected_w_prime_std = float(np.sqrt(cov[1, 1]))
+
+    assert fit.cp_watts_std == pytest.approx(expected_cp_std)
+    assert fit.w_prime_joules_std == pytest.approx(expected_w_prime_std)
+    assert fit.cp_watts_std > 0
+
+
 def test_fit_excludes_points_outside_the_duration_range() -> None:
     true_cp, true_w_prime = 250.0, 20_000.0
     # 60s et 3600s sont hors plage par défaut [180, 1200] ; s'ils étaient

@@ -483,6 +483,42 @@ température prévue, pourtant disponible) — limite assumée et documentée
 dans le module, pas dans le périmètre retenu pour ce ticket : le vent
 est le facteur dominant d'un créneau à l'autre.
 
+## Incertitude Monte-Carlo (T-28)
+
+`models/uncertainty.py` (`propagate_uncertainty`) tire N échantillons de
+trois sources indépendantes et simule le temps pour chacun :
+
+- **CP/W'** : Normal(CP, σ_CP) / Normal(W', σ_W'). Les écarts-types sont
+  **réels**, pas inventés — `np.polyfit(..., cov=True)` (T-28) sur la
+  même régression linéaire déjà utilisée pour le fit (T-09,
+  linéarisation Monod-Scherrer) : aucune nouvelle méthode statistique,
+  juste demander la covariance à un calcul qui l'avait déjà en interne.
+  Champs `cp_watts_std`/`w_prime_joules_std` ajoutés à `CriticalPowerFit`
+  avec un défaut à 0.0 pour ne rien casser des tests existants.
+- **Forme** : tirage AVEC REMISE dans la distribution empirique des 90
+  derniers jours de l'indice de performance (T-23) — pas la régression
+  T-24, dont on a déjà trouvé qu'elle généralise mal (R² négatif en
+  validation croisée temporelle) ; s'appuyer sur son résidu comme
+  incertitude calibrée n'aurait pas eu de sens.
+- **Vent** : Normal(vitesse, σ_relatif × vitesse), tronqué à 0. `σ_relatif`
+  (20% par défaut) est une **hypothèse assumée**, pas mesurée — le projet
+  n'a pas d'historique prévision-vs-réalisé pour la calibrer, tranché
+  explicitement avec l'utilisateur avant de coder plutôt que deviné.
+
+`scripts/best_window_uncertainty.py <segment_id> [draft_preset]` prend
+la meilleure fenêtre trouvée par T-27 et propage l'incertitude dessus —
+critère de fin du ticket, obtenu sur un vrai segment :
+
+```
+Temps prédit : 5:15 ± 9s
+```
+
+(CP=321±3 W, calibré sur de vraies données.) Limite honnête : seulement
+**5 valeurs** dans la fenêtre de forme récente (90 derniers jours) pour
+ce segment — le bootstrap tire dans une distribution empirique bien
+maigre, mais tirer dans 5 vraies valeurs reste plus honnête qu'un
+paramètre de dispersion inventé.
+
 ### Limites connues
 
 - Une seule activité (`10066651328`) a 63 échantillons `heartrate = -1`
