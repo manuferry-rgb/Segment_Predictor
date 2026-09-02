@@ -21,12 +21,17 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 OPEN_METEO_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
+OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 HOURLY_VARIABLES = (
     "temperature_2m,relative_humidity_2m,surface_pressure,wind_speed_10m,wind_direction_10m"
 )
 
 DEFAULT_RETRY_BACKOFF_S = 60.0
 MAX_RETRIES = 5
+# Limite documentée d'Open-Meteo pour /v1/forecast (vérifiée dans la doc,
+# pas devinée) — au-delà, l'API renverrait une erreur moins claire qu'un
+# ValueError explicite ici.
+MAX_FORECAST_DAYS = 16
 
 DEFAULT_WEATHER_GRID_DEGREES = 0.1
 
@@ -83,6 +88,31 @@ def compute_weather_zones(
     ]
 
 
+def _get_with_retry(
+    http_client: httpx.Client,
+    url: str,
+    params: dict,
+    sleep: Callable[[float], None],
+) -> dict:
+    """GET avec retry/backoff sur 429, partagé par l'archive (historique,
+    T-14) et le forecast (T-27) — même API, même comportement de
+    rate-limit, seuls l'URL et les paramètres diffèrent.
+    """
+    attempts = 0
+    while True:
+        response = http_client.get(url, params=params)
+        if response.status_code != 429:
+            response.raise_for_status()
+            return response.json()
+
+        attempts += 1
+        if attempts > MAX_RETRIES:
+            response.raise_for_status()  # toujours 429 -> on abandonne, l'erreur remonte
+
+        wait_s = float(response.headers.get("Retry-After", DEFAULT_RETRY_BACKOFF_S))
+        sleep(wait_s)
+
+
 def get_historical_weather(
     http_client: httpx.Client,
     latitude: float,
@@ -105,20 +135,48 @@ def get_historical_weather(
         "hourly": HOURLY_VARIABLES,
         "timezone": "UTC",
     }
+    return _get_with_retry(http_client, OPEN_METEO_ARCHIVE_URL, params, sleep)
 
-    attempts = 0
-    while True:
-        response = http_client.get(OPEN_METEO_ARCHIVE_URL, params=params)
-        if response.status_code != 429:
-            response.raise_for_status()
-            return response.json()
 
-        attempts += 1
-        if attempts > MAX_RETRIES:
-            response.raise_for_status()  # toujours 429 -> on abandonne, l'erreur remonte
+def get_forecast_weather(
+    http_client: httpx.Client,
+    latitude: float,
+    longitude: float,
+    forecast_days: int,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict:
+    """GET /v1/forecast (T-27) — même forme et mêmes unités que l'archive
+    (`get_historical_weather`), vérifié en conditions réelles avant de
+    coder plutôt que supposé : même structure `hourly.*`, mêmes noms de
+    variables, même conversion SI à faire côté predict/.
 
-        wait_s = float(response.headers.get("Retry-After", DEFAULT_RETRY_BACKOFF_S))
-        sleep(wait_s)
+    `timezone="auto"`, PAS "UTC" comme l'archive : Open-Meteo détecte le
+    fuseau local depuis lat/lng et renvoie des heures murales locales
+    ("jeudi 17h" doit être 17h l'heure du cycliste, pas 17h UTC) — vérifié
+    en conditions réelles (`utc_offset_seconds`/`timezone` dans la
+    réponse). L'archive reste en UTC : elle est interpolée contre
+    `start_date`, déjà stocké en UTC (T-07), pas affichée à un humain.
+
+    Contrairement à l'historique, PAS persisté en Parquet/`raw.*`/
+    `main.*` : une prévision n'est pas une donnée historique stable, elle
+    devient fausse en quelques heures — le principe "Parquet = seule
+    source de vérité, tables reconstruites à l'identique" n'aurait pas de
+    sens ici. Le fetch et son usage restent confinés au script appelant
+    (predict/, T-27).
+    """
+    if not 1 <= forecast_days <= MAX_FORECAST_DAYS:
+        raise ValueError(
+            f"forecast_days doit être entre 1 et {MAX_FORECAST_DAYS} (limite Open-Meteo), "
+            f"reçu {forecast_days}"
+        )
+    params = {
+        "latitude": latitude,
+        "longitude": longitude,
+        "forecast_days": forecast_days,
+        "hourly": HOURLY_VARIABLES,
+        "timezone": "auto",
+    }
+    return _get_with_retry(http_client, OPEN_METEO_FORECAST_URL, params, sleep)
 
 
 def save_weather_zone(raw_dir: Path, zone_lat: float, zone_lng: float, weather: dict) -> Path:

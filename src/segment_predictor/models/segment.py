@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .physics import air_density, cyclist_speed_from_power
+from .physics import air_density, cyclist_speed_from_power, effective_headwind_speed_ms
 
 # ISA, niveau de la mer, 15°C — dérivé de air_density() plutôt qu'un
 # littéral séparé, pour rester cohérent avec T-10 par construction.
@@ -64,8 +64,13 @@ def smooth_altitude(
     return window_sums / window_counts
 
 
-def _bearing_rad(lat1_deg: float, lng1_deg: float, lat2_deg: float, lng2_deg: float) -> float:
-    """Cap initial (relèvement) du point 1 vers le point 2 : 0 = nord, croît vers l'est."""
+def bearing_rad(lat1_deg: float, lng1_deg: float, lat2_deg: float, lng2_deg: float) -> float:
+    """Cap initial (relèvement) du point 1 vers le point 2 : 0 = nord, croît
+    vers l'est. Publique (pas seulement interne à chunk_segment) : réutilisée
+    pour donner un cap global à un segment entier depuis ses start/end
+    latlng (T-27, storage/segments.py), là où l'approximation "un seul
+    tronçon" n'a pas de heading calculé chunk par chunk.
+    """
     lat1 = math.radians(lat1_deg)
     lat2 = math.radians(lat2_deg)
     delta_lng = math.radians(lng2_deg - lng1_deg)
@@ -143,7 +148,7 @@ def chunk_segment(
                 start_distance_m=float(boundaries_m[i]),
                 length_m=float(length_m),
                 grade=float(elevation_change_m / length_m),
-                heading_rad=_bearing_rad(
+                heading_rad=bearing_rad(
                     boundary_lats[i], boundary_lngs[i], boundary_lats[i + 1], boundary_lngs[i + 1]
                 ),
             )
@@ -158,16 +163,26 @@ def _simulate_at_constant_power(
     cda_m2: float,
     crr: float,
     air_density_kg_m3: float,
+    wind_speed_ms: float,
+    wind_direction_rad: float,
 ) -> float:
     """Temps total pour parcourir tous les tronçons à une puissance CONSTANTE.
 
-    Pas de vent (headwind=0.0) ni de draft à ce stade : "conditions
-    standard", ajoutés en T-14/T-19.
+    Le vent (T-15, `effective_headwind_speed_ms`) est absolu — un seul
+    (wind_speed_ms, wind_direction_rad) pour tout le segment, réaliste sur
+    la portée d'un segment (quelques minutes) — mais sa PROJECTION est
+    recalculée à chaque tronçon via son propre `heading_rad` : un même
+    vent absolu peut être de face sur un tronçon et de dos sur un autre
+    si le tracé change de direction (ex. un aller-retour). Pas de draft à
+    ce stade ("conditions standard" pour le draft, ajouté ailleurs T-19).
     """
     total_time_s = 0.0
     for chunk in chunks:
+        headwind_speed_ms = effective_headwind_speed_ms(
+            wind_speed_ms, wind_direction_rad, chunk.heading_rad
+        )
         speed_ms = cyclist_speed_from_power(
-            power_w, chunk.grade, 0.0, mass_kg, cda_m2, crr, air_density_kg_m3
+            power_w, chunk.grade, headwind_speed_ms, mass_kg, cda_m2, crr, air_density_kg_m3
         )
         total_time_s += chunk.length_m / speed_ms
     return total_time_s
@@ -181,11 +196,20 @@ def simulate_segment_time(
     cda_m2: float,
     crr: float,
     air_density_kg_m3: float = STANDARD_AIR_DENSITY_KG_M3,
+    wind_speed_ms: float = 0.0,
+    wind_direction_rad: float = 0.0,
     max_iterations: int = DEFAULT_MAX_ITERATIONS,
     convergence_tolerance_s: float = DEFAULT_CONVERGENCE_TOLERANCE_S,
 ) -> float:
     """Temps prédit pour parcourir `chunks` à la puissance soutenable par le
-    modèle CP (T-09), sans vent ni draft ("conditions standard").
+    modèle CP (T-09), sans draft ("conditions standard" pour le draft
+    uniquement — le vent est pris en compte si fourni, T-27).
+
+    `wind_speed_ms`/`wind_direction_rad` : vent absolu unique pour tout le
+    segment (voir `_simulate_at_constant_power`) — `wind_direction_rad`
+    dans la convention météo (direction D'OÙ VIENT le vent, T-15), pas à
+    confondre avec `heading_rad` des tronçons (direction OÙ ON VA).
+    Défaut (0.0, 0.0) : aucun effet, comportement identique à avant T-27.
 
     Boucle de convergence (point fixe) : la puissance soutenable
     `CP + W'/T` dépend du temps T du segment, qui dépend lui-même de la
@@ -204,7 +228,14 @@ def simulate_segment_time(
     for _ in range(max_iterations):
         sustainable_power_w = cp_watts + w_prime_joules / predicted_time_s
         new_time_s = _simulate_at_constant_power(
-            chunks, sustainable_power_w, mass_kg, cda_m2, crr, air_density_kg_m3
+            chunks,
+            sustainable_power_w,
+            mass_kg,
+            cda_m2,
+            crr,
+            air_density_kg_m3,
+            wind_speed_ms,
+            wind_direction_rad,
         )
         if abs(new_time_s - predicted_time_s) < convergence_tolerance_s:
             return new_time_s

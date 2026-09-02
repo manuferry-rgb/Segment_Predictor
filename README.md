@@ -427,6 +427,62 @@ dériver très légèrement sous 0 (de l'ordre d'un pas de grille, quelques
 centaines de joules avec les réglages par défaut) — pas un bug, la
 précision s'affine avec `n_w_bal_levels` au prix du temps de calcul.
 
+## Prévision sur 10 jours (T-27)
+
+Le plus gros ticket depuis T-17 : trois briques manquantes, comblées
+avant de coder le classement lui-même.
+
+**Le vent enfin branché.** `effective_headwind_speed_ms` (T-15) existait
+depuis longtemps mais n'était appelée nulle part — `simulate_segment_
+time` (T-13) avait toujours un vent nul en dur. `wind_speed_ms`/
+`wind_direction_rad` sont maintenant des paramètres (défaut : aucun
+effet, comportement identique à avant), appliqués **par tronçon** via
+son propre `heading_rad` — un même vent absolu peut être de face sur un
+tronçon et de dos sur un autre.
+
+**Un vrai cap de segment.** L'approximation "un seul tronçon"
+(T-16/T-17/T-20) utilisait `heading_rad=0.0` en dur — sans importance
+tant que le vent n'était pas branché, mais un vent "de face" n'aurait
+aucun sens pour un segment qui ne va pas plein nord. `main.segments`
+calcule maintenant un cap global depuis `start_latlng`/`end_latlng`
+(déjà présents dans le JSON brut Strava, juste jamais extraits) via
+`bearing_rad` (T-12, rendue publique). Approximation à l'échelle du
+segment entier, pas tronçon par tronçon (toujours pas de profil détaillé
+au niveau segment, T-07b) — mais directionnellement correcte, ce qui ne
+l'était pas avant. `start_lat`/`start_lng` sont aussi stockés, comme
+position de référence pour interroger la météo.
+
+**`ingest/open_meteo.get_forecast_weather`** (`/v1/forecast`, vérifié en
+conditions réelles) : même forme que l'archive historique (T-14), avec
+deux différences déterminantes :
+- `timezone="auto"` et non `"UTC"` — la prévision doit parler à un
+  humain en heure locale ("jeudi 17h" = 17h chez lui), pas en UTC.
+- **Jamais persistée** en Parquet/`raw.*`/`main.*`, contrairement à
+  toute autre source du projet : une prévision devient fausse en
+  quelques heures, le principe "Parquet = seule source de vérité,
+  tables reconstruites à l'identique" n'aurait pas de sens ici.
+
+`predict/forecast_window.py` évalue chaque créneau horaire d'une plage
+6h-21h (choix explicite — évite de classer une nuit juste parce que le
+vent y est nul) sur les 10 prochains jours, classe du plus rapide au
+plus lent. `scripts/best_window.py <segment_id> [draft_preset]` sort le
+résultat — critère de fin du ticket, obtenu sur un vrai segment :
+
+```
+Meilleure fenêtre : dimanche 06/09 16h
+  temps prédit 5:06, vent 7 km/h, 31°C
+```
+
+Bug trouvé en testant sur les vraies données, pas en théorie : sur une
+fenêtre de 10 jours, le même jour de semaine peut apparaître deux fois
+(un vendredi en tout début et tout en fin de fenêtre) — "jeudi 17h" seul
+serait ambigu. Corrigé en ajoutant la date (jj/mm) à l'affichage.
+
+Densité de l'air laissée à sa valeur standard (pas recalculée depuis la
+température prévue, pourtant disponible) — limite assumée et documentée
+dans le module, pas dans le périmètre retenu pour ce ticket : le vent
+est le facteur dominant d'un créneau à l'autre.
+
 ### Limites connues
 
 - Une seule activité (`10066651328`) a 63 échantillons `heartrate = -1`
