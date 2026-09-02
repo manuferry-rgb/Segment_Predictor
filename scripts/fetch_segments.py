@@ -1,11 +1,17 @@
 """T-06 : récupère des segments Strava (KOM + PR) et alimente la table DuckDB `segments`.
 
+Sans argument, récupère TOUS tes segments favoris (`GET /segments/starred`)
+— c'est le mode normal. Donne des IDs explicites en argument seulement
+pour cibler des segments précis (pas forcément favoris).
+
 Vérifie d'abord ce qui est déjà sur disque : un segment déjà téléchargé
 n'est jamais redemandé à Strava. La table `segments` est reconstruite à
 partir de TOUS les segments bruts déjà présents, pas seulement ceux
 demandés dans cet appel.
 
-Usage : uv run python scripts/fetch_segments.py <segment_id> [<segment_id> ...]
+Usage :
+  uv run python scripts/fetch_segments.py                    # tous les favoris
+  uv run python scripts/fetch_segments.py <segment_id> [...]  # IDs précis
 """
 
 import sys
@@ -15,7 +21,10 @@ import duckdb
 import httpx
 
 from segment_predictor.ingest.strava_auth import get_valid_access_token
-from segment_predictor.ingest.strava_segments import fetch_and_store_segments
+from segment_predictor.ingest.strava_segments import (
+    fetch_and_store_segments,
+    list_starred_segment_ids,
+)
 from segment_predictor.storage.segments import build_segments_table
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -24,13 +33,18 @@ DUCKDB_PATH = PROJECT_ROOT / "data" / "segment_predictor.duckdb"
 
 
 def main() -> None:
-    segment_ids = [int(arg) for arg in sys.argv[1:]]
-    if not segment_ids:
-        raise SystemExit("Usage : uv run python scripts/fetch_segments.py <segment_id> [...]")
+    explicit_ids = [int(arg) for arg in sys.argv[1:]]
 
     env_path = PROJECT_ROOT / ".env"
     with httpx.Client(timeout=30.0) as client:
         access_token = get_valid_access_token(client, env_path)
+
+        if explicit_ids:
+            segment_ids = explicit_ids
+        else:
+            segment_ids = list_starred_segment_ids(client, access_token)
+            print(f"{len(segment_ids)} segments favoris trouvés sur Strava")
+
         summary = fetch_and_store_segments(client, access_token, segment_ids, SEGMENTS_RAW_DIR)
 
     print(f"Segments récupérés : {len(summary.fetched_ids)}")

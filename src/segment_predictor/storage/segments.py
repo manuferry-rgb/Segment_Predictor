@@ -21,14 +21,21 @@ import pyarrow.parquet as pq
 
 # "4:12" (mm:ss) ou "1:02:35" (h:mm:ss). Le groupe des heures est optionnel.
 _DURATION_PATTERN = re.compile(r"^(?:(\d+):)?(\d{1,2}):(\d{2})$")
+# "53s" : format à part pour les segments sous la minute (pas de ":"),
+# trouvé en conditions réelles sur 7 des 75 segments favoris (T-17).
+_SECONDS_ONLY_PATTERN = re.compile(r"^(\d+)s$")
 
 
 def parse_strava_duration(value: str) -> int:
-    """ "4:12" -> 252, "1:02:35" -> 3755."""
+    """ "4:12" -> 252, "1:02:35" -> 3755, "53s" -> 53."""
+    seconds_only_match = _SECONDS_ONLY_PATTERN.match(value)
+    if seconds_only_match is not None:
+        return int(seconds_only_match.group(1))
+
     match = _DURATION_PATTERN.match(value)
     if match is None:
         raise ValueError(
-            f"Format de durée Strava inattendu : {value!r} (attendu 'mm:ss' ou 'h:mm:ss')"
+            f"Format de durée Strava inattendu : {value!r} (attendu 'mm:ss', 'h:mm:ss' ou 'Ns')"
         )
     hours_str, minutes_str, seconds_str = match.groups()
     hours = int(hours_str) if hours_str is not None else 0

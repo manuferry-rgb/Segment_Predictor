@@ -25,6 +25,36 @@ from segment_predictor.ingest.strava_client import (
     parse_rate_limit,
 )
 
+PER_PAGE = 200
+
+
+def list_starred_segment_ids(
+    http_client: httpx.Client,
+    access_token: str,
+    sleep: Callable[[float], None] = time.sleep,
+) -> list[int]:
+    """GET /segments/starred, pagination jusqu'à épuisement (même pattern que
+    list_activities, T-04). Renvoie juste les IDs — get_segment récupère le
+    détail de chacun (KOM, PR, pente...) séparément, comme pour une liste
+    d'IDs donnée à la main.
+    """
+    segment_ids: list[int] = []
+    page = 1
+    while True:
+        response = authenticated_get(
+            http_client,
+            "/segments/starred",
+            access_token,
+            params={"per_page": PER_PAGE, "page": page},
+            sleep=sleep,
+        )
+        batch = response.json()
+        segment_ids.extend(segment["id"] for segment in batch)
+        if len(batch) < PER_PAGE:
+            break
+        page += 1
+    return segment_ids
+
 
 def _fetch_segment_response(
     http_client: httpx.Client, access_token: str, segment_id: int, sleep: Callable[[float], None]

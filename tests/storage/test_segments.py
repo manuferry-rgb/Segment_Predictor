@@ -22,6 +22,8 @@ from segment_predictor.storage.segments import build_segments_table, parse_strav
         ("39:56", 2396),  # mm:ss, proche de l'heure
         ("1:02:35", 3755),  # h:mm:ss
         ("2:00:00", 7200),  # h:mm:ss, heures rondes
+        ("53s", 53),  # segment très court (< 1 min) : pas de ":", trouvé sur 7/75 favoris réels
+        ("0s", 0),
     ],
 )
 def test_parse_strava_duration_valid_formats(raw: str, expected_seconds: int) -> None:

@@ -10,6 +10,7 @@ import pyarrow.parquet as pq
 from segment_predictor.ingest.strava_segments import (
     fetch_and_store_segments,
     get_segment,
+    list_starred_segment_ids,
     save_segment,
 )
 
@@ -164,3 +165,36 @@ def test_fetch_and_store_segments_stops_cleanly_on_persistent_429_without_header
     assert summary.fetched_ids == []
     assert summary.remaining_ids == [1]
     assert summary.stopped_due_to_daily_quota is True
+
+
+# ---- list_starred_segment_ids -----------------------------------------------------------
+
+
+def test_list_starred_segment_ids_paginates_until_a_short_page() -> None:
+    page_1 = [{"id": i} for i in range(200)]
+    page_2 = [{"id": i} for i in range(200, 250)]
+    requested_pages = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v3/segments/starred"
+        page = int(request.url.params["page"])
+        requested_pages.append(page)
+        assert request.url.params["per_page"] == "200"
+        body = page_1 if page == 1 else (page_2 if page == 2 else [])
+        return httpx.Response(200, json=body)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    segment_ids = list_starred_segment_ids(client, "tok", sleep=NO_SLEEP)
+
+    assert requested_pages == [1, 2]
+    assert segment_ids == list(range(250))
+
+
+def test_list_starred_segment_ids_returns_empty_list_when_none_starred() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[])
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    assert list_starred_segment_ids(client, "tok", sleep=NO_SLEEP) == []
