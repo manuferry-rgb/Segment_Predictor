@@ -14,6 +14,7 @@ from segment_predictor.models.physics import cyclist_speed_from_power
 from segment_predictor.models.segment import (
     STANDARD_AIR_DENSITY_KG_M3,
     SegmentChunk,
+    bearing_rad,
     chunk_segment,
     simulate_segment_time,
     smooth_altitude,
@@ -118,6 +119,16 @@ def test_chunk_segment_headings_match_known_compass_directions() -> None:
     assert len(chunks) == 2
     assert chunks[0].heading_rad == pytest.approx(0.0, abs=1e-6)  # nord
     assert chunks[1].heading_rad == pytest.approx(math.pi / 2, abs=1e-3)  # est
+
+
+def test_bearing_rad_matches_known_compass_directions() -> None:
+    """Publique (T-27) : testée directement, pas seulement via
+    chunk_segment — c'est ce qui donnera le cap global d'un segment
+    depuis ses start/end latlng."""
+    assert bearing_rad(0.0, 0.0, 1.0, 0.0) == pytest.approx(0.0, abs=1e-6)  # nord
+    assert bearing_rad(0.0, 0.0, 0.0, 1.0) == pytest.approx(math.pi / 2, abs=1e-6)  # est
+    assert bearing_rad(0.0, 0.0, -1.0, 0.0) == pytest.approx(math.pi, abs=1e-6)  # sud
+    assert bearing_rad(0.0, 0.0, 0.0, -1.0) == pytest.approx(3 * math.pi / 2, abs=1e-6)  # ouest
 
 
 def test_chunk_segment_raises_on_mismatched_lengths() -> None:
@@ -253,3 +264,113 @@ def test_simulate_segment_time_raises_when_not_converged() -> None:
 def test_simulate_segment_time_raises_on_empty_chunks() -> None:
     with pytest.raises(ValueError, match="tronçon"):
         simulate_segment_time([], _CP_WATTS, _W_PRIME_JOULES, _MASS_KG, _CDA_M2, _CRR)
+
+
+# ---- vent (T-27 : effective_headwind_speed_ms, T-15, enfin branché) --------------------------
+
+
+def test_simulate_segment_time_default_has_no_wind() -> None:
+    """Appel sans vent == appel avec wind_speed_ms=0.0 explicite — le
+    défaut ne doit rien changer au comportement d'avant T-27."""
+    chunk = [SegmentChunk(0.0, 2000.0, 0.0, heading_rad=0.0)]
+    baseline = simulate_segment_time(chunk, _CP_WATTS, _W_PRIME_JOULES, _MASS_KG, _CDA_M2, _CRR)
+    explicit_no_wind = simulate_segment_time(
+        chunk,
+        _CP_WATTS,
+        _W_PRIME_JOULES,
+        _MASS_KG,
+        _CDA_M2,
+        _CRR,
+        wind_speed_ms=0.0,
+        wind_direction_rad=1.7,  # n'importe quelle direction : sans vitesse, aucun effet
+    )
+    assert explicit_no_wind == pytest.approx(baseline)
+
+
+def test_simulate_segment_time_headwind_is_slower_than_no_wind() -> None:
+    # cap plein nord (0.0), vent qui VIENT du nord (0.0) : face pleine.
+    chunk = [SegmentChunk(0.0, 2000.0, 0.0, heading_rad=0.0)]
+    no_wind = simulate_segment_time(chunk, _CP_WATTS, _W_PRIME_JOULES, _MASS_KG, _CDA_M2, _CRR)
+    headwind = simulate_segment_time(
+        chunk,
+        _CP_WATTS,
+        _W_PRIME_JOULES,
+        _MASS_KG,
+        _CDA_M2,
+        _CRR,
+        wind_speed_ms=5.0,
+        wind_direction_rad=0.0,
+    )
+    assert headwind > no_wind
+
+
+def test_simulate_segment_time_tailwind_is_faster_than_no_wind() -> None:
+    # cap plein nord (0.0), vent qui VIENT du sud (pi) : dos plein.
+    chunk = [SegmentChunk(0.0, 2000.0, 0.0, heading_rad=0.0)]
+    no_wind = simulate_segment_time(chunk, _CP_WATTS, _W_PRIME_JOULES, _MASS_KG, _CDA_M2, _CRR)
+    tailwind = simulate_segment_time(
+        chunk,
+        _CP_WATTS,
+        _W_PRIME_JOULES,
+        _MASS_KG,
+        _CDA_M2,
+        _CRR,
+        wind_speed_ms=5.0,
+        wind_direction_rad=math.pi,
+    )
+    assert tailwind < no_wind
+
+
+def test_simulate_segment_time_crosswind_is_close_to_no_wind() -> None:
+    # cap plein nord, vent qui vient de l'est (pi/2) : travers pur, pas de composante de face/dos.
+    chunk = [SegmentChunk(0.0, 2000.0, 0.0, heading_rad=0.0)]
+    no_wind = simulate_segment_time(chunk, _CP_WATTS, _W_PRIME_JOULES, _MASS_KG, _CDA_M2, _CRR)
+    crosswind = simulate_segment_time(
+        chunk,
+        _CP_WATTS,
+        _W_PRIME_JOULES,
+        _MASS_KG,
+        _CDA_M2,
+        _CRR,
+        wind_speed_ms=5.0,
+        wind_direction_rad=math.pi / 2,
+    )
+    assert crosswind == pytest.approx(no_wind, rel=1e-6)
+
+
+def test_simulate_segment_time_wind_applies_per_chunk_heading() -> None:
+    """Deux tronçons de caps opposés sous le même vent absolu : l'un doit
+    subir un vent de face, l'autre un vent de dos — pas le même vent
+    appliqué en bloc à tout le segment."""
+    north_then_south = [
+        SegmentChunk(0.0, 1000.0, 0.0, heading_rad=0.0),  # va vers le nord
+        SegmentChunk(1000.0, 1000.0, 0.0, heading_rad=math.pi),  # fait demi-tour, va vers le sud
+    ]
+    # vent qui vient du nord : face sur le 1er tronçon, dos sur le 2e
+    time_s = simulate_segment_time(
+        north_then_south,
+        _CP_WATTS,
+        _W_PRIME_JOULES,
+        _MASS_KG,
+        _CDA_M2,
+        _CRR,
+        wind_speed_ms=5.0,
+        wind_direction_rad=0.0,
+    )
+
+    # même vent, mais un aller simple entièrement plein nord (face sur tout le trajet)
+    all_north = [SegmentChunk(0.0, 2000.0, 0.0, heading_rad=0.0)]
+    all_headwind_time_s = simulate_segment_time(
+        all_north,
+        _CP_WATTS,
+        _W_PRIME_JOULES,
+        _MASS_KG,
+        _CDA_M2,
+        _CRR,
+        wind_speed_ms=5.0,
+        wind_direction_rad=0.0,
+    )
+
+    # le trajet aller-retour (face puis dos) doit être plus rapide que
+    # face sur toute la distance : le vent de dos du 2e tronçon compense.
+    assert time_s < all_headwind_time_s
