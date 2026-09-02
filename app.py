@@ -100,7 +100,36 @@ def load_segments() -> list[tuple[int, str]]:
 
 
 st.set_page_config(page_title="Kompass", page_icon="🚴")
-st.title("Kompass")
+
+# CSS injecté (T-31) : Streamlit n'expose pas via config.toml le style des
+# cartes st.metric individuellement, seulement la palette globale — on
+# cible leur conteneur (data-testid, stable dans l'API publique Streamlit,
+# contrairement aux classes générées) pour un liseré couleur effort et une
+# valeur plus imposante, cohérent avec le thème "sportif" de
+# .streamlit/config.toml.
+st.markdown(
+    """
+    <style>
+    div[data-testid="stMetric"] {
+        background-color: #FFF1EC;
+        border-left: 4px solid #FF4B2B;
+        border-radius: 8px;
+        padding: 0.9rem 1rem 0.7rem 1rem;
+    }
+    div[data-testid="stMetricValue"] {
+        font-size: 1.65rem;
+        font-weight: 700;
+    }
+    h1 {
+        font-weight: 800;
+        letter-spacing: -0.02em;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.title("🚴 Kompass")
 st.caption("Meilleure fenêtre horaire et stratégie de pacing pour un segment Strava")
 
 conn = get_connection()

@@ -1,0 +1,11 @@
+# Thème "sportif/dynamique" (T-31) : orange effort sur fond clair,
+# proche des codes visuels Strava/Zwift plutôt que le bleu Streamlit
+# par défaut. Ce fichier ne configure QUE les couleurs/police de base ;
+# les cartes/espacements plus fins sont en CSS injecté dans app.py,
+# Streamlit n'exposant pas ce niveau de détail via config.toml.
+[theme]
+primaryColor = "#FF4B2B"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#FFF1EC"
+textColor = "#1A1A2E"
+font = "sans serif"
