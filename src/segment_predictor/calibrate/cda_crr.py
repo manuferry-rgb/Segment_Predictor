@@ -5,7 +5,7 @@ fausserait CdA (traînée réduite par le drafting, pas par un CdA
 réellement plus faible) — c'est tout l'intérêt du tri fait en T-16.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import duckdb
@@ -17,7 +17,14 @@ from segment_predictor.models.power import CriticalPowerFit
 from segment_predictor.models.segment import SegmentChunk, simulate_segment_time
 
 DEFAULT_CDA_BOUNDS_M2 = (0.15, 0.50)
-DEFAULT_CRR_BOUNDS = (0.002, 0.010)
+# Borne haute à 0.012 plutôt que la valeur "manuel" habituelle (~0.005 sur
+# bitume lisse) : sur les 77 efforts réels retenus (T-17), l'optimum SANS
+# contrainte converge vers Crr≈0.0105, quelle que soit la largeur des
+# bornes testées (vérifié jusqu'à 0.03) — pas un artefact de plafonnement,
+# une vraie valeur portée par les données (revêtement réel des segments,
+# et/ou un résidu de vent non modélisé absorbé par Crr plutôt que CdA,
+# le vent n'étant pas encore branché dans cette calibration, cf T-15/T-19).
+DEFAULT_CRR_BOUNDS = (0.002, 0.012)
 DEFAULT_INITIAL_CDA_M2 = 0.32
 DEFAULT_INITIAL_CRR = 0.005
 # Pénalité (erreur relative) utilisée quand simulate_segment_time ne converge
@@ -33,7 +40,13 @@ class CdaCrrFit:
     """Résultat d'une calibration. `rmse_relative` : racine de l'erreur
     quadratique moyenne RELATIVE (0.05 = 5% d'écart type entre prédit et
     réel) — pas en secondes, pour rester comparable entre segments de
-    longueurs différentes.
+    longueurs différentes. `n_excluded_outside_duration_range` : efforts
+    solo écartés parce que hors de la plage de validité du modèle CP
+    (voir calibrate_cda_crr_from_db). `n_excluded_not_a_pr` : efforts solo
+    écartés parce que jamais classés dans les records perso Strava sur
+    leur segment (pr_rank NULL) — voir calibrate_cda_crr_from_db pour le
+    raisonnement. Les deux valent 0 si le fit vient de fit_cda_crr
+    directement, sans passer par ces filtres.
     """
 
     cda_m2: float
@@ -41,6 +54,8 @@ class CdaCrrFit:
     n_points: int
     rmse_relative: float
     converged: bool
+    n_excluded_outside_duration_range: int = 0
+    n_excluded_not_a_pr: int = 0
 
 
 def fit_cda_crr(
@@ -108,6 +123,26 @@ def calibrate_cda_crr_from_db(
     """Charge les efforts tagués `solo` dans `csv_path`, récupère leur
     distance/pente via `main.segments`, et calibre CdA/Crr dessus.
 
+    Exclut les efforts dont la durée tombe hors de `cp_fit.duration_range_s`
+    (par défaut 180-1200s) — trouvé en conditions réelles (320 efforts
+    solo) : sous 180s, `CP + W'/T` diverge vers l'infini quand T->0 (déjà
+    documenté en T-09), donc surestime largement la puissance soutenable
+    sur les segments courts. Les inclure ne calibre pas un mauvais CdA/Crr,
+    ça fait plafonner l'optimiseur à ses bornes maximales pour compenser un
+    biais de durée qu'aucun CdA/Crr ne peut corriger.
+
+    Exclut aussi les efforts solo dont `pr_rank` est NULL — trouvé en
+    conditions réelles (320 efforts solo, filtre durée déjà appliqué,
+    n=131 restants) : la plupart de ces efforts sont des passages à
+    rythme d'entraînement, pas des efforts proches du maximum, or le
+    modèle prédit le temps ATTEIGNABLE en effort maximal (CP + W'/T). Les
+    comparer biaise le fit dans la même direction que le biais de durée,
+    peu importe le vrai CdA/Crr. `pr_rank` (position au classement perso
+    Strava sur ce segment) est un proxy simple pour "effort quasi
+    maximal" — approximation documentée, pas une vraie mesure d'intensité
+    (ex. VO2/FTP) : un effort peut être un record perso sans être un
+    effort "à bloc", et inversement sur un segment rarement emprunté.
+
     `cp_fit` est injectable pour les tests ; laissé à None en usage
     normal pour être recalculé depuis `conn` (voir fit_current_cp, T-16).
     """
@@ -124,11 +159,25 @@ def calibrate_cda_crr_from_db(
 
     placeholders = ",".join("?" * len(solo_effort_ids))
     rows = conn.execute(
-        f"SELECT s.distance_m, s.average_grade, se.elapsed_time_s "
+        f"SELECT s.distance_m, s.average_grade, se.elapsed_time_s, se.pr_rank "
         f"FROM segment_efforts se JOIN segments s ON s.id = se.segment_id "
         f"WHERE se.id IN ({placeholders})",
         solo_effort_ids,
     ).fetchall()
 
-    efforts = list(rows)
-    return fit_cda_crr(efforts, cp_fit, mass_kg)
+    range_min_s, range_max_s = cp_fit.duration_range_s
+    in_range = [row for row in rows if range_min_s <= row[2] <= range_max_s]
+    excluded_duration_count = len(rows) - len(in_range)
+
+    with_pr_rank = [row for row in in_range if row[3] is not None]
+    excluded_not_a_pr_count = len(in_range) - len(with_pr_rank)
+
+    efforts = [
+        (distance_m, average_grade, time_s) for distance_m, average_grade, time_s, _ in with_pr_rank
+    ]
+    fit = fit_cda_crr(efforts, cp_fit, mass_kg)
+    return replace(
+        fit,
+        n_excluded_outside_duration_range=excluded_duration_count,
+        n_excluded_not_a_pr=excluded_not_a_pr_count,
+    )

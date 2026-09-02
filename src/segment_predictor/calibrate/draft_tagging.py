@@ -32,6 +32,12 @@ from segment_predictor.models.segment import SegmentChunk, simulate_segment_time
 
 DEFAULT_CP_FIT_DURATIONS_S = (180, 240, 300, 420, 600, 900, 1200)
 DEFAULT_DRAFT_STATUS = "unknown"
+# ';' plutôt que ',' : Excel en locale française écrit (et attend, au
+# double-clic) des CSV séparés par ';' — un ',' obligerait à repasser par
+# l'assistant d'import à chaque ouverture. load_existing_annotations
+# détecte le séparateur au lieu de le supposer, donc un fichier ',' déjà
+# existant (ancien commit, ou un autre tableur) reste lisible.
+CSV_DELIMITER = ";"
 CSV_FIELDNAMES = (
     "effort_id",
     "date",
@@ -121,11 +127,25 @@ def predict_segment_time_s(
 
 
 def load_existing_annotations(csv_path: Path) -> dict[int, str]:
-    """draft_status déjà annoté par effort_id — la seule chose qu'on ne réécrit jamais."""
+    """draft_status déjà annoté par effort_id — la seule chose qu'on ne réécrit jamais.
+
+    Détecte le séparateur (`,` ou `;`) plutôt que de supposer une virgule :
+    Excel en locale française réenregistre les CSV avec `;`, rencontré en
+    conditions réelles. On ne va pas demander à l'utilisateur de lutter
+    contre son tableur à chaque fois qu'il tague une ligne.
+    """
     if not csv_path.exists():
         return {}
     with csv_path.open(newline="", encoding="utf-8") as f:
-        return {int(row["effort_id"]): row["draft_status"] for row in csv.DictReader(f)}
+        sample = f.read(4096)
+        f.seek(0)
+        try:
+            dialect = csv.Sniffer().sniff(sample, delimiters=",;")
+        except csv.Error:
+            dialect = csv.excel  # échantillon trop court/ambigu : virgule par défaut
+        return {
+            int(row["effort_id"]): row["draft_status"] for row in csv.DictReader(f, dialect=dialect)
+        }
 
 
 def generate_draft_tagging_csv(
@@ -197,7 +217,7 @@ def generate_draft_tagging_csv(
 
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     with csv_path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=CSV_FIELDNAMES)
+        writer = csv.DictWriter(f, fieldnames=CSV_FIELDNAMES, delimiter=CSV_DELIMITER)
         writer.writeheader()
         for row in rows:
             writer.writerow({k: ("" if v is None else v) for k, v in row.items()})
