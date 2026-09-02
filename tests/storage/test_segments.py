@@ -129,6 +129,32 @@ def test_build_segments_table_handles_never_ridden_segment_across_files(tmp_path
     assert rows == [(1, None, None), (2, 180, "2024-01-01T00:00:00Z")]
 
 
+def test_build_segments_table_reads_effort_count(tmp_path) -> None:
+    raw_dir = tmp_path / "segments"
+    _write_raw_segment(
+        raw_dir,
+        {
+            "id": 1,
+            "name": "Segment",
+            "distance": 1000.0,
+            "average_grade": 5.0,
+            "xoms": {"kom": "1:00"},
+            "athlete_segment_stats": {
+                "pr_elapsed_time": 90,
+                "pr_date": "2023-01-01T00:00:00Z",
+                "effort_count": 16,
+            },
+        },
+        "1.parquet",
+    )
+
+    conn = duckdb.connect(":memory:")
+    build_segments_table(conn, raw_dir)
+
+    row = conn.execute("SELECT effort_count FROM segments").fetchone()
+    assert row == (16,)
+
+
 def test_build_segments_table_raises_when_pr_stats_missing(tmp_path) -> None:
     """Pas de valeur par défaut silencieuse : un segment mal formé lève, il n'est pas ignoré."""
     raw_dir = tmp_path / "segments"

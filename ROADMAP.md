@@ -43,9 +43,19 @@ Parser le format "mm:ss" vers des secondes.
 *Critère de fin* : une table `segments` en DuckDB avec KOM et PR.
 
 **T-07 — Schéma DuckDB**
-Modéliser proprement : `activities`, `streams`, `segments`,
-`segment_efforts`. Séparer les vues brutes des vues transformées.
+Modéliser proprement : `activities`, `streams`, `segments`.
+Séparer les vues brutes (schéma `raw`) des tables transformées
+(schéma `main`).
 *Critère de fin* : le schéma est documenté dans le README.
+
+**T-07b — Ingestion des segment_efforts**
+`GET /segments/{id}` ne donne que le PR agrégé, pas l'historique des
+passages. Ingérer `GET /activities/{id}` en vue détaillée (tableau
+`segment_efforts` embarqué) pour les activités qui recoupent mes
+segments favoris, puis construire la table `segment_efforts`
+(PK `id`, FK `segment_id`, FK `activity_id`) — reporté depuis T-07.
+*Critère de fin* : une table `segment_efforts` en DuckDB, avec au moins
+un effort par segment déjà roulé.
 
 ---
 

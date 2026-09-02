@@ -54,6 +54,7 @@ def _segment_to_row(raw_segment: dict) -> dict:
         "kom_seconds": parse_strava_duration(raw_segment["xoms"]["kom"]),
         "pr_seconds": stats.get("pr_elapsed_time"),
         "pr_date": stats.get("pr_date"),
+        "effort_count": stats.get("effort_count"),
     }
 
 
