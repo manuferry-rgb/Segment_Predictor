@@ -10,6 +10,7 @@ qu'il appelle, ce fichier ne fait qu'assembler et afficher.
 Usage : uv run streamlit run app.py
 """
 
+import math
 from pathlib import Path
 
 import duckdb
@@ -55,6 +56,29 @@ def _format_day_hour(dt) -> str:
 def _format_mmss(seconds: float) -> str:
     minutes, secs = divmod(round(seconds), 60)
     return f"{minutes}:{secs:02d}"
+
+
+# Ordre Nord -> Nord-Est -> ... -> Nord-Ouest, pas de traduction anglaise :
+# Open-Meteo donne `wind_direction_10m` en degrés météo (0° = nord, sens
+# horaire), direction D'OÙ VIENT le vent (même convention que
+# `wind_direction_rad` dans physics.py).
+_COMPASS_LABELS = ("N", "NE", "E", "SE", "S", "SO", "O", "NO")
+
+
+def _compass_label(direction_rad: float) -> str:
+    degrees = math.degrees(direction_rad) % 360
+    index = round(degrees / 45) % len(_COMPASS_LABELS)
+    return _COMPASS_LABELS[index]
+
+
+def _format_gap_s(predicted_s: float, target_s: float) -> str:
+    """Écart signé prédiction - référence, pour st.metric(delta=...).
+
+    Positif = prédit plus lent que la référence (KOM ou PR), négatif =
+    plus rapide. `delta_color="inverse"` côté appelant fait que "plus
+    rapide" s'affiche en vert, "plus lent" en rouge.
+    """
+    return f"{predicted_s - target_s:+.0f}s"
 
 
 # st.cache_resource : la connexion DuckDB n'est ouverte qu'une fois par
@@ -117,8 +141,10 @@ if st.button("Chercher la meilleure fenêtre", type="primary"):
         st.warning("Aucun créneau exploitable sur les 10 prochains jours (6h-21h).")
         st.stop()
 
-    distance_m, average_grade, heading_rad = conn.execute(
-        "SELECT distance_m, average_grade, heading_rad FROM segments WHERE id = ?", [segment_id]
+    distance_m, average_grade, heading_rad, kom_seconds, pr_seconds = conn.execute(
+        "SELECT distance_m, average_grade, heading_rad, kom_seconds, pr_seconds "
+        "FROM segments WHERE id = ?",
+        [segment_id],
     ).fetchone()
     chunk = SegmentChunk(0.0, distance_m, average_grade, heading_rad)
 
@@ -126,8 +152,50 @@ if st.button("Chercher la meilleure fenêtre", type="primary"):
     st.subheader(f"Meilleure fenêtre : {_format_day_hour(best.time)}")
     col1, col2, col3 = st.columns(3)
     col1.metric("Temps prédit", _format_mmss(best.predicted_time_s))
-    col2.metric("Vent", f"{best.wind_speed_ms * 3.6:.0f} km/h")
+    col2.metric(
+        "Vent",
+        f"{best.wind_speed_ms * 3.6:.0f} km/h",
+        delta=f"du {_compass_label(best.wind_direction_rad)}",
+        delta_color="off",
+    )
     col3.metric("Température", f"{best.temperature_k - 273.15:.0f}°C")
+
+    # Écart à combler (T-31) : référence = temps prédit sur la meilleure
+    # fenêtre, comparé au KOM du segment et à mon propre PR.
+    kom_col, pr_col = st.columns(2)
+    kom_col.metric(
+        "KOM du segment",
+        _format_mmss(kom_seconds),
+        delta=_format_gap_s(best.predicted_time_s, kom_seconds),
+        delta_color="inverse",
+    )
+    if pr_seconds is not None:
+        pr_col.metric(
+            "Mon PR",
+            _format_mmss(pr_seconds),
+            delta=_format_gap_s(best.predicted_time_s, pr_seconds),
+            delta_color="inverse",
+        )
+        # Puissance moyenne sur L'EFFORT DU PR (T-31), pour estimer soi-même
+        # la puissance à tenir pour viser le KOM. Retrouvé par
+        # (segment_id, elapsed_time_s) : `segments.pr_seconds` ne porte pas
+        # l'id de l'effort correspondant, donc pas de jointure directe.
+        # `average_watts` peut être NULL (pas de capteur ce jour-là, T-07b) —
+        # pas de valeur inventée, on l'indique explicitement.
+        pr_power_row = conn.execute(
+            "SELECT average_watts, device_watts FROM segment_efforts "
+            "WHERE segment_id = ? AND elapsed_time_s = ? "
+            "ORDER BY start_date DESC LIMIT 1",
+            [segment_id, pr_seconds],
+        ).fetchone()
+        if pr_power_row is not None and pr_power_row[0] is not None:
+            pr_average_watts, device_watts = pr_power_row
+            sensor_note = "" if device_watts else " (non confirmé par un capteur)"
+            pr_col.caption(f"Puissance moyenne : {pr_average_watts:.0f} W{sensor_note}")
+        else:
+            pr_col.caption("Puissance moyenne : non disponible")
+    else:
+        pr_col.metric("Mon PR", "Jamais roulé")
 
     # Incertitude (T-28)
     performance_index_samples = recent_performance_index_values(conn, cp_fit=cp_fit)
@@ -165,6 +233,7 @@ if st.button("Chercher la meilleure fenêtre", type="primary"):
                 "Créneau": _format_day_hour(w.time),
                 "Temps": _format_mmss(w.predicted_time_s),
                 "Vent (km/h)": round(w.wind_speed_ms * 3.6),
+                "Direction": _compass_label(w.wind_direction_rad),
                 "Température (°C)": round(w.temperature_k - 273.15),
             }
             for w in windows
