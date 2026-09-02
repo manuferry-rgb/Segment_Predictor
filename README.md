@@ -278,6 +278,37 @@ de puissance sur cette période), un rythme annuel de blocs/récup net
 ensuite, et un gros creux de TSB (~-45) suivi d'un rebond marqué
 mi-2026, reconnu comme cohérent.
 
+## Wellness intervals.icu (T-22)
+
+`ingest/intervals_icu.py` récupère HRV, sommeil, FC de repos et poids
+via l'API intervals.icu (Basic Auth : utilisateur `API_KEY`, mot de
+passe la clé générée dans Réglages > Developer Settings — pas d'OAuth
+contrairement à Strava). Un seul appel couvre toute la plage de dates
+(pas de pagination), et le fichier Parquet est **écrasé** à chaque
+fetch plutôt qu'accumulé : le wellness peut être corrigé
+rétroactivement (ex. saisie HRV en retard), donc un refetch complet
+reste plus correct qu'un "depuis la dernière fois".
+
+`storage/wellness.py` construit `main.wellness` (date, hrv, sleep_s,
+resting_heart_rate_bpm, weight_kg). `weight_kg` est vérifié en kg contre
+une vraie valeur du compte (83.0 — 83 lb serait beaucoup trop léger pour
+un cycliste adulte), pas juste supposé. `hrv`/`sleep_s` restent en
+revanche **non vérifiés** : jamais rencontrés renseignés dans
+l'historique réel disponible pour confirmer leur unité au-delà du nom
+du champ intervals.icu lui-même.
+
+`uv run python scripts/fetch_wellness.py` (prérequis :
+`INTERVALS_ICU_ATHLETE_ID` et `INTERVALS_ICU_API_KEY` dans `.env`).
+
+Critère de fin du ticket (table alimentée) atteint : **392 lignes**
+réelles (2025-08-07 → 2026-09-02). La couverture reste creuse
+honnêtement — 0 valeur `hrv`, 0 `sleep_s`, 49 jours de
+`resting_heart_rate_bpm` (constant à 55), 1 seule entrée `weight_kg`.
+Pas un bug : reflète l'usage actuel du compte intervals.icu (pas
+d'appareil connecté pour HRV/sommeil pour l'instant). À reconsidérer
+pour T-24 (modèle de forme), qui devra composer avec des features très
+manquantes.
+
 ### Limites connues
 
 - Une seule activité (`10066651328`) a 63 échantillons `heartrate = -1`
