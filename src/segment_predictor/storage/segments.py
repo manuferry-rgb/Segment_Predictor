@@ -50,7 +50,12 @@ def _segment_to_row(raw_segment: dict) -> dict:
         "id": raw_segment["id"],
         "name": raw_segment["name"],
         "distance_m": raw_segment["distance"],
-        "average_grade": raw_segment["average_grade"],
+        # Strava renvoie average_grade en POURCENT (0.2 = 0.2%), mais toute
+        # la couche models/ (grade de cyclist_power_required, T-10) attend
+        # une fraction rise/run (0.002) — convention découverte tardivement
+        # (T-16), en branchant enfin cette colonne sur la physique : un
+        # 0.2% traité comme 20% donnait un temps prédit ~5x trop long.
+        "average_grade": raw_segment["average_grade"] / 100.0,
         "kom_seconds": parse_strava_duration(raw_segment["xoms"]["kom"]),
         "pr_seconds": stats.get("pr_elapsed_time"),
         "pr_date": stats.get("pr_date"),

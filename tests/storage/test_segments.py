@@ -81,6 +81,33 @@ def test_build_segments_table_parses_kom_and_reads_pr(tmp_path) -> None:
     ]
 
 
+def test_build_segments_table_converts_average_grade_from_percent_to_fraction(tmp_path) -> None:
+    """Régression T-16 : Strava renvoie average_grade en pourcent (0.2 = 0.2%),
+    mais models/physics.py (grade de cyclist_power_required, depuis T-10)
+    attend une fraction rise/run (0.002). Non converti, un 0.2% était traité
+    comme 20% par la physique — repéré en branchant enfin cette colonne sur
+    un temps prédit réel (T-16), jamais avant."""
+    raw_dir = tmp_path / "segments"
+    _write_raw_segment(
+        raw_dir,
+        {
+            "id": 1,
+            "name": "Segment",
+            "distance": 1000.0,
+            "average_grade": 0.2,  # 0.2%, comme renvoyé par Strava
+            "xoms": {"kom": "1:00"},
+            "athlete_segment_stats": {"pr_elapsed_time": 60, "pr_date": "2023-01-01T00:00:00Z"},
+        },
+        "1.parquet",
+    )
+
+    conn = duckdb.connect(":memory:")
+    build_segments_table(conn, raw_dir)
+
+    average_grade = conn.execute("SELECT average_grade FROM segments").fetchone()[0]
+    assert average_grade == pytest.approx(0.002)
+
+
 def test_build_segments_table_handles_never_ridden_segment_across_files(tmp_path) -> None:
     """Régression : un segment jamais roulé a `athlete_segment_stats.pr_*` à
     None, ce qui fait inférer un type `null` par pyarrow pour CE fichier —

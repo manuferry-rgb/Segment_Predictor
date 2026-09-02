@@ -59,18 +59,39 @@ PK `id`.
 | colonne | type | note |
 |---|---|---|
 | id | BIGINT | PK |
-| name, distance_m, average_grade | | |
+| name, distance_m | | |
+| average_grade | DOUBLE | **fraction** rise/run (0.002 = 0.2%), pas le pourcent brut de Strava — converti ici (÷100) pour rester cohérent avec `grade` dans `models/physics.py` depuis T-10. Bug réel trouvé tardivement (T-16, en branchant enfin cette colonne sur un temps prédit) : resté non converti, un 0.2% était traité comme 20% par la physique |
 | kom_seconds | BIGINT | parsé depuis `xoms.kom` ("mm:ss" / "h:mm:ss") |
 | pr_seconds, pr_date | BIGINT, VARCHAR | NULL si le segment n'a jamais été roulé (`effort_count = 0`) |
 | effort_count | BIGINT | nombre de mes passages sur ce segment |
 
-### `segment_efforts` — pas encore construite
+### `main.segment_efforts` (T-07b)
 
-Nécessite l'historique individuel de mes passages sur un segment, que
-`GET /segments/{id}` ne fournit pas (seulement le PR agrégé). Ça
-demande un nouvel ingest (`GET /activities/{id}` en vue détaillée, qui
-embarque un tableau `segment_efforts` par activité) — voir T-07b dans
-`ROADMAP.md`.
+PK `id` (id d'effort Strava), FK `segment_id → segments.id`, FK
+`activity_id → activities.id`. Tous les efforts trouvés dans les
+activités détaillées (`GET /activities/{id}`, `ingest/strava_activity_
+details.py`) — Strava matche automatiquement tous les segments publics
+croisés, pas seulement ceux suivis dans `main.segments` ; c'est T-16 qui
+filtre aux segments suivis via la jointure.
+
+| colonne | type | note |
+|---|---|---|
+| id | BIGINT | PK |
+| segment_id, activity_id | BIGINT | FK |
+| start_date | TIMESTAMP | UTC, naïf, même convention que `activities.start_date` |
+| elapsed_time_s, moving_time_s | BIGINT | |
+| distance_m | DOUBLE | |
+| average_watts, average_heartrate | DOUBLE | NULL si pas de capteur ce jour-là |
+| device_watts | BOOLEAN | |
+| pr_rank, kom_rank | BIGINT | NULL si l'effort n'est ni un PR ni un KOM |
+
+**Limite de couverture connue** : seules les activités avec capteur de
+puissance (même périmètre que `main.streams`, T-05 — 497/735 sorties
+vélo) ont leur vue détaillée récupérée. Sur le segment 7722237
+(`effort_count=16`), seuls 4 efforts sont couverts ici — les 12 autres
+ont eu lieu sur des sorties sans capteur, invisibles à cette ingestion.
+Assumé : un effort sans puissance ne sert de toute façon à rien pour la
+calibration (T-17), pas la peine d'étendre l'ingest pour les couvrir.
 
 ### `main.activity_weather` (T-14)
 
@@ -110,6 +131,44 @@ tend à **surestimer** le vent effectif. Une correction nécessiterait un
 profil vertical du vent (loi logarithmique ou en puissance), pas fait
 ici : le vent est simplement absent des calculs de puissance jusqu'à
 T-15/T-19.
+
+## Tri des efforts en groupe (T-16)
+
+`annotations/draft_status.csv` (versionné dans Git, contrairement à
+`data/` — c'est une donnée d'entrée du projet, pas un artefact
+régénérable à l'identique) liste tous mes efforts sur les segments
+suivis (`main.segments`), avec un temps prédit et un écart, pour aider
+à repérer ceux à tagger `solo`/`drafted` avant la calibration CdA/Crr
+(T-17, qui doit exclure les efforts en groupe).
+
+`uv run python scripts/generate_draft_tagging_csv.py` régénère le
+fichier. **Seule la colonne `draft_status` est préservée** d'un
+lancement à l'autre (fusion par `effort_id`) — `predicted_time_s` et
+`gap_s` sont toujours recalculés depuis "le modèle actuel" (CP/W'
+réajustés à chaque appel sur tout l'historique). Rien n'est jamais
+supprimé, y compris si un effort disparaît de la source. Remplis
+`draft_status` (`solo`/`drafted`, par défaut `unknown`) à la main, puis
+commit.
+
+`gap_s = predicted_time_s - actual_time_s` : positif = tu es allé
+**plus vite** que la prédiction, le signal à regarder en premier. Trié
+par écart décroissant.
+
+**⚠️ Le temps prédit n'est PAS une détection de drafting, juste une aide
+au tri** :
+- Le modèle physique n'est pas calibré : CdA=0.32 m² et Crr=0.005 sont
+  des valeurs génériques de littérature, pas les tiennes (c'est
+  justement ce que T-17 calibrera, à partir des efforts tagués `solo`
+  ici — la boucle est assumée).
+- Le segment est traité comme **un seul tronçon à pente moyenne
+  constante** (`main.segments.average_grade`), pas son profil réel
+  tronçon par tronçon — on n'a pas de quoi le reconstruire par effort
+  (`start_index`/`end_index` non extraits en T-07b).
+- Sans vent (T-15 existe mais n'est pas branché ici) ni draft (T-19).
+
+Un grand écart peut donc venir d'un vrai drafting, d'un bon jour, ou
+juste des approximations ci-dessus — à vérifier au cas par cas, pas à
+prendre pour argent comptant.
 
 ### Limites connues
 
