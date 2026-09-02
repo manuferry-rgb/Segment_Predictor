@@ -7,7 +7,11 @@ ticket), pas de données réelles : chaque cas est vérifiable à la main.
 import numpy as np
 import pytest
 
-from segment_predictor.models.wbal import compute_w_prime_balance, recovery_time_constant_s
+from segment_predictor.models.wbal import (
+    compute_w_prime_balance,
+    recovery_time_constant_s,
+    w_prime_balance_step,
+)
 
 _CP_W = 250.0
 _W_PRIME_J = 20_000.0
@@ -112,3 +116,41 @@ def test_w_prime_balance_raises_on_non_positive_dt() -> None:
     power_w = np.full(10, 200.0)
     with pytest.raises(ValueError, match="dt_s"):
         compute_w_prime_balance(power_w, _CP_W, _W_PRIME_J, dt_s=0.0)
+
+
+# ---- w_prime_balance_step (T-26 : réutilisé pour un pas = un tronçon entier) -------------------
+
+
+def test_w_prime_balance_step_matches_compute_w_prime_balance_second_by_second() -> None:
+    """Le pas isolé doit produire exactement la même trajectoire que la
+    boucle seconde par seconde — c'est un pur découpage interne, pas une
+    formule différente."""
+    power_w = np.concatenate([np.full(30, _CP_W + 80.0), np.full(60, _CP_W - 30.0)])
+    expected = compute_w_prime_balance(power_w, _CP_W, _W_PRIME_J, dt_s=1.0)
+
+    w_bal = _W_PRIME_J
+    reconstructed = []
+    for power in power_w:
+        w_bal = w_prime_balance_step(w_bal, power, _CP_W, _W_PRIME_J, dt_s=1.0)
+        reconstructed.append(w_bal)
+
+    assert reconstructed == pytest.approx(expected)
+
+
+def test_w_prime_balance_step_handles_a_single_large_dt() -> None:
+    """La formule marche pour n'importe quel dt, pas seulement 1s — un
+    tronçon entier (dizaines de secondes) en un seul pas, pas besoin de
+    re-simuler seconde par seconde (T-26)."""
+    # 40s à 80W au-dessus de CP en un seul grand pas == la dépense
+    # analytique exacte (linéaire, indépendante de tau au-dessus de CP).
+    result = w_prime_balance_step(_W_PRIME_J, _CP_W + 80.0, _CP_W, _W_PRIME_J, dt_s=40.0)
+    assert result == pytest.approx(_W_PRIME_J - 80.0 * 40.0)
+
+
+def test_w_prime_balance_step_raises_on_non_positive_cp_w_prime_or_dt() -> None:
+    with pytest.raises(ValueError, match="cp_watts"):
+        w_prime_balance_step(_W_PRIME_J, 200.0, 0.0, _W_PRIME_J, dt_s=1.0)
+    with pytest.raises(ValueError, match="w_prime_joules"):
+        w_prime_balance_step(_W_PRIME_J, 200.0, _CP_W, 0.0, dt_s=1.0)
+    with pytest.raises(ValueError, match="dt_s"):
+        w_prime_balance_step(_W_PRIME_J, 200.0, _CP_W, _W_PRIME_J, dt_s=0.0)
