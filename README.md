@@ -519,6 +519,32 @@ ce segment — le bootstrap tire dans une distribution empirique bien
 maigre, mais tirer dans 5 vraies valeurs reste plus honnête qu'un
 paramètre de dispersion inventé.
 
+## Interface Streamlit (T-29)
+
+`app.py` (`uv run streamlit run app.py`) : choix du segment et du
+scénario de draft, poids éditable — plus besoin de modifier une
+constante dans un script pour changer de vélo. N'introduit aucune
+nouvelle logique métier, assemble juste ce qui existe déjà (T-16 à
+T-28) derrière des widgets.
+
+`st.cache_resource`/`st.cache_data` évitent de rouvrir la connexion
+DuckDB et de refaire la calibration CdA/Crr/CP à chaque interaction —
+Streamlit ré-exécute tout le script à chaque clic/changement de widget,
+sans ce cache tout repartirait de zéro à chaque fois.
+
+Vérifié en conditions réelles (lancé, piloté au clavier/souris dans un
+vrai navigateur, pas juste supposé fonctionner) : sélection du segment
+avec filtre texte, meilleure fenêtre, incertitude, classement complet et
+stratégie de pacing s'affichent correctement de bout en bout.
+
+La "stratégie de pacing" reste honnêtement limitée : un seul tronçon par
+segment (pas de profil détaillé stocké, T-07b jamais fait), donc une
+puissance recommandée constante, pas une vraie variation le long du
+segment — écrit explicitement dans l'interface (pas caché dans un
+commentaire de code que l'utilisateur ne verra jamais), tranché avec
+l'utilisateur avant de coder plutôt que de livrer un graphique plat sans
+explication.
+
 ### Limites connues
 
 - Une seule activité (`10066651328`) a 63 échantillons `heartrate = -1`
