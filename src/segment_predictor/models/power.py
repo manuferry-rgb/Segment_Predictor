@@ -1,4 +1,5 @@
-"""Courbe de puissance : puissance maximale moyenne (MMP) par durée.
+"""Courbe de puissance : puissance maximale moyenne (MMP) par durée,
+et modèle Critical Power à 2 paramètres ajusté dessus.
 
 Fonctions pures — aucun I/O, aucune dépendance à ingest/storage. Le pont
 entre le stream brut Strava (paires (t_s, watts) à résolution variable
@@ -7,6 +8,7 @@ entre le stream brut Strava (paires (t_s, watts) à résolution variable
 """
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -90,3 +92,88 @@ def mean_maximal_power_curve(watts: np.ndarray, durations_s: Iterable[int]) -> d
     supplémentaire au-delà de ça, chaque durée a sa propre fenêtre optimale.
     """
     return {duration_s: mean_maximal_power(watts, duration_s) for duration_s in durations_s}
+
+
+# Plage par défaut du modèle CP à 2 paramètres : en dessous, la puissance est
+# dominée par des facteurs neuromusculaires/anaérobies (le modèle diverge vers
+# l'infini quand t->0, ce qui est physiologiquement absurde) ; au-dessus, CP
+# n'est plus vraiment constante (fatigue, déplétion glycogénique,
+# thermorégulation font décliner la puissance soutenable plus vite que ne le
+# prédit l'hyperbole). 3-20 min est la fenêtre usuelle en physiologie de
+# l'exercice depuis Monod & Scherrer (1965).
+DEFAULT_CP_DURATION_RANGE_S = (180, 1200)
+
+
+@dataclass(frozen=True)
+class CriticalPowerFit:
+    """Résultat d'un ajustement du modèle P(t) = CP + W'/t.
+
+    `r_squared` est calculé dans l'espace P(t) d'origine (watts), pas
+    dans l'espace travail-temps utilisé pour le fit lui-même — sinon il
+    mesurerait la qualité de l'ajustement sur une grandeur dérivée (le
+    travail), pas sur ce qu'on veut vraiment évaluer (la puissance).
+    """
+
+    cp_watts: float
+    w_prime_joules: float
+    r_squared: float
+    n_points: int
+    duration_range_s: tuple[int, int]
+
+
+def fit_critical_power(
+    durations_s: np.ndarray,
+    mmp_watts: np.ndarray,
+    duration_range_s: tuple[int, int] = DEFAULT_CP_DURATION_RANGE_S,
+) -> CriticalPowerFit:
+    """Ajuste CP (W) et W' (J) sur les points (durée, MMP) dans `duration_range_s`.
+
+    Linéarisation travail-temps (Monod & Scherrer) : P = CP + W'/t se
+    réécrit W_total = P·t = CP·t + W', linéaire en t. Régresser sur le
+    travail total plutôt que directement sur 1/t évite de sur-pondérer
+    les durées courtes (1/t explose quand t est petit) — c'est la
+    méthode historique de calcul de CP/W', fermée (pas d'itération, pas
+    de sensibilité à une valeur initiale).
+
+    Les points hors `duration_range_s`, ou avec un MMP manquant (NaN,
+    ex. activité jamais assez longue), sont exclus plutôt qu'estimés.
+    """
+    durations_s = np.asarray(durations_s, dtype=float)
+    mmp_watts = np.asarray(mmp_watts, dtype=float)
+    if len(durations_s) != len(mmp_watts):
+        raise ValueError(
+            f"durations_s et mmp_watts n'ont pas la même longueur "
+            f"({len(durations_s)} vs {len(mmp_watts)})"
+        )
+
+    range_min, range_max = duration_range_s
+    if range_min <= 0 or range_max <= range_min:
+        raise ValueError(f"duration_range_s invalide : {duration_range_s}")
+
+    in_range = (durations_s >= range_min) & (durations_s <= range_max)
+    valid = in_range & ~np.isnan(mmp_watts)
+    t = durations_s[valid]
+    p = mmp_watts[valid]
+
+    if len(t) < 2:
+        raise ValueError(
+            f"seulement {len(t)} point(s) valide(s) dans [{range_min}, {range_max}]s : "
+            "il en faut au moins 2 pour ajuster 2 paramètres (CP et W')"
+        )
+
+    total_work = p * t  # travail total (J) fourni pendant t secondes à puissance p
+    cp, w_prime = np.polyfit(t, total_work, 1)  # pente = CP, ordonnée à l'origine = W'
+
+    predicted_p = cp + w_prime / t
+    residuals = p - predicted_p
+    ss_res = float(np.sum(residuals**2))
+    ss_tot = float(np.sum((p - np.mean(p)) ** 2))
+    r_squared = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
+
+    return CriticalPowerFit(
+        cp_watts=float(cp),
+        w_prime_joules=float(w_prime),
+        r_squared=r_squared,
+        n_points=len(t),
+        duration_range_s=(int(range_min), int(range_max)),
+    )

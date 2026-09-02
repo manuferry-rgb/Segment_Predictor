@@ -1,6 +1,7 @@
-"""Tests de la courbe de puissance (T-08) — fonctions pures, aucun I/O.
+"""Tests de la courbe de puissance (T-08) et du modèle Critical Power (T-09).
 
-Chaque cas est vérifiable à la main : c'est le but (critère de fin T-08).
+Fonctions pures, aucun I/O. Chaque cas T-08 est vérifiable à la main ;
+les cas T-09 partent d'un CP/W' connu et vérifient que le fit les retrouve.
 """
 
 import math
@@ -9,6 +10,7 @@ import numpy as np
 import pytest
 
 from segment_predictor.models.power import (
+    fit_critical_power,
     mean_maximal_power,
     mean_maximal_power_curve,
     resample_to_uniform_seconds,
@@ -154,3 +156,101 @@ def test_mmp_curve_includes_nan_for_infeasible_durations_without_raising() -> No
     assert curve[1] == 100.0
     assert curve[3] == 100.0
     assert math.isnan(curve[10])
+
+
+# ---- fit_critical_power (T-09) ---------------------------------------------------------
+
+
+def _hyperbola(durations_s: np.ndarray, cp: float, w_prime: float) -> np.ndarray:
+    """P(t) = CP + W'/t — génère des points MMP synthétiques exacts."""
+    return cp + w_prime / durations_s
+
+
+def test_fit_recovers_exact_cp_and_w_prime_from_noiseless_data() -> None:
+    true_cp, true_w_prime = 250.0, 20_000.0
+    durations = np.array([180.0, 300.0, 600.0, 900.0, 1200.0])
+    mmp = _hyperbola(durations, true_cp, true_w_prime)
+
+    fit = fit_critical_power(durations, mmp)
+
+    assert fit.cp_watts == pytest.approx(true_cp, abs=1e-6)
+    assert fit.w_prime_joules == pytest.approx(true_w_prime, abs=1e-3)
+    assert fit.r_squared == pytest.approx(1.0, abs=1e-9)
+    assert fit.n_points == 5
+    assert fit.duration_range_s == (180, 1200)
+
+
+def test_fit_excludes_points_outside_the_duration_range() -> None:
+    true_cp, true_w_prime = 250.0, 20_000.0
+    # 60s et 3600s sont hors plage par défaut [180, 1200] ; s'ils étaient
+    # inclus avec une valeur incohérente avec l'hyperbole, ils fausseraient le fit.
+    durations = np.array([60.0, 180.0, 300.0, 600.0, 900.0, 1200.0, 3600.0])
+    mmp = _hyperbola(durations, true_cp, true_w_prime)
+    mmp[0] = 900.0  # incohérent avec l'hyperbole, doit être ignoré (hors plage)
+    mmp[-1] = 50.0  # idem
+
+    fit = fit_critical_power(durations, mmp)
+
+    assert fit.n_points == 5  # seulement les 5 points dans [180, 1200]
+    assert fit.cp_watts == pytest.approx(true_cp, abs=1e-6)
+    assert fit.w_prime_joules == pytest.approx(true_w_prime, abs=1e-3)
+
+
+def test_fit_ignores_nan_points_within_range() -> None:
+    true_cp, true_w_prime = 250.0, 20_000.0
+    durations = np.array([180.0, 300.0, 600.0, 900.0, 1200.0])
+    mmp = _hyperbola(durations, true_cp, true_w_prime)
+    mmp[2] = np.nan  # trou dans la courbe MMP à 600s
+
+    fit = fit_critical_power(durations, mmp)
+
+    assert fit.n_points == 4
+    assert fit.cp_watts == pytest.approx(true_cp, abs=1e-6)
+
+
+def test_fit_recovers_approximate_cp_and_w_prime_with_noise() -> None:
+    true_cp, true_w_prime = 280.0, 18_000.0
+    durations = np.array([180.0, 240.0, 300.0, 420.0, 600.0, 900.0, 1200.0])
+    mmp = _hyperbola(durations, true_cp, true_w_prime)
+
+    rng = np.random.default_rng(seed=42)
+    noisy_mmp = mmp + rng.normal(loc=0.0, scale=3.0, size=mmp.shape)  # +/- 3W de bruit
+
+    fit = fit_critical_power(durations, noisy_mmp)
+
+    assert fit.cp_watts == pytest.approx(true_cp, rel=0.02)
+    assert fit.w_prime_joules == pytest.approx(true_w_prime, rel=0.05)
+    assert fit.r_squared > 0.95
+
+
+def test_fit_accepts_custom_duration_range() -> None:
+    true_cp, true_w_prime = 250.0, 20_000.0
+    durations = np.array([60.0, 120.0, 180.0])
+    mmp = _hyperbola(durations, true_cp, true_w_prime)
+
+    fit = fit_critical_power(durations, mmp, duration_range_s=(60, 180))
+
+    assert fit.n_points == 3
+    assert fit.cp_watts == pytest.approx(true_cp, abs=1e-6)
+    assert fit.duration_range_s == (60, 180)
+
+
+def test_fit_raises_on_mismatched_lengths() -> None:
+    with pytest.raises(ValueError, match="longueur"):
+        fit_critical_power(np.array([180.0, 300.0]), np.array([250.0]))
+
+
+def test_fit_raises_on_invalid_duration_range() -> None:
+    durations = np.array([180.0, 300.0, 600.0])
+    mmp = _hyperbola(durations, 250.0, 20_000.0)
+    with pytest.raises(ValueError, match="duration_range_s"):
+        fit_critical_power(durations, mmp, duration_range_s=(0, 100))
+    with pytest.raises(ValueError, match="duration_range_s"):
+        fit_critical_power(durations, mmp, duration_range_s=(600, 300))
+
+
+def test_fit_raises_when_fewer_than_two_valid_points_in_range() -> None:
+    durations = np.array([180.0, 5000.0])  # un seul point dans [180, 1200]
+    mmp = _hyperbola(durations, 250.0, 20_000.0)
+    with pytest.raises(ValueError, match="point"):
+        fit_critical_power(durations, mmp)
