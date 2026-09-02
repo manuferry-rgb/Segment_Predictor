@@ -17,6 +17,7 @@ from segment_predictor.storage.segment_efforts import build_segment_efforts_tabl
 from segment_predictor.storage.segments import build_segments_table
 from segment_predictor.storage.streams import build_streams_table
 from segment_predictor.storage.weather import build_activity_weather_table
+from segment_predictor.storage.wellness import build_wellness_table
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ACTIVITIES_RAW_DIR = PROJECT_ROOT / "data" / "raw" / "strava_activities"
@@ -24,6 +25,7 @@ STREAMS_RAW_DIR = PROJECT_ROOT / "data" / "raw" / "strava_streams"
 SEGMENTS_RAW_DIR = PROJECT_ROOT / "data" / "raw" / "strava_segments"
 WEATHER_RAW_DIR = PROJECT_ROOT / "data" / "raw" / "open_meteo"
 ACTIVITY_DETAILS_RAW_DIR = PROJECT_ROOT / "data" / "raw" / "strava_activity_details"
+WELLNESS_RAW_DIR = PROJECT_ROOT / "data" / "raw" / "intervals_icu"
 DUCKDB_PATH = PROJECT_ROOT / "data" / "segment_predictor.duckdb"
 
 
@@ -38,6 +40,7 @@ def main() -> None:
             SEGMENTS_RAW_DIR,
             WEATHER_RAW_DIR,
             ACTIVITY_DETAILS_RAW_DIR,
+            WELLNESS_RAW_DIR,
         )
         build_activities_table(conn, ACTIVITIES_RAW_DIR)
         build_streams_table(conn, STREAMS_RAW_DIR)
@@ -46,8 +49,17 @@ def main() -> None:
         # zones/dates interpoler
         build_activity_weather_table(conn, WEATHER_RAW_DIR)
         build_segment_efforts_table(conn, ACTIVITY_DETAILS_RAW_DIR)
+        build_wellness_table(conn, WELLNESS_RAW_DIR)
 
-        for table in ("activities", "streams", "segments", "activity_weather", "segment_efforts"):
+        tables = (
+            "activities",
+            "streams",
+            "segments",
+            "activity_weather",
+            "segment_efforts",
+            "wellness",
+        )
+        for table in tables:
             count = conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
             print(f"main.{table}: {count} lignes")
     finally:

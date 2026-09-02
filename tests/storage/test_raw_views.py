@@ -95,6 +95,29 @@ def test_create_raw_views_exposes_activity_details_when_provided(tmp_path) -> No
     assert row == (1,)
 
 
+def test_create_raw_views_exposes_wellness_when_provided(tmp_path) -> None:
+    activities_dir = tmp_path / "strava_activities"
+    activities_dir.mkdir(parents=True)
+    pq.write_table(pa.Table.from_pylist([{"id": 1}]), activities_dir / "a.parquet")
+    streams_dir = tmp_path / "strava_streams"
+    streams_dir.mkdir(parents=True)
+    pq.write_table(pa.Table.from_pylist([{"time": {"data": [0]}}]), streams_dir / "1.parquet")
+    segments_dir = tmp_path / "strava_segments"
+    segments_dir.mkdir(parents=True)
+    pq.write_table(pa.Table.from_pylist([{"id": 1}]), segments_dir / "1.parquet")
+    wellness_dir = tmp_path / "intervals_icu"
+    wellness_dir.mkdir(parents=True)
+    pq.write_table(
+        pa.Table.from_pylist([{"id": "2025-06-01", "hrv": 65.0}]), wellness_dir / "wellness.parquet"
+    )
+
+    conn = duckdb.connect(":memory:")
+    create_raw_views(conn, activities_dir, streams_dir, segments_dir, wellness_raw_dir=wellness_dir)
+
+    row = conn.execute("SELECT hrv FROM raw.wellness").fetchone()
+    assert row == (65.0,)
+
+
 def test_create_raw_views_skips_weather_when_not_provided(tmp_path) -> None:
     activities_dir = tmp_path / "strava_activities"
     activities_dir.mkdir(parents=True)
