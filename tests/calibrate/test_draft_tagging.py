@@ -15,6 +15,7 @@ import pyarrow as pa
 import pytest
 
 from segment_predictor.calibrate.draft_tagging import (
+    CSV_DELIMITER,
     compute_aggregate_mmp_curve,
     fit_current_cp,
     generate_draft_tagging_csv,
@@ -22,6 +23,19 @@ from segment_predictor.calibrate.draft_tagging import (
     predict_segment_time_s,
 )
 from segment_predictor.models.power import CriticalPowerFit
+
+
+def _read_csv_rows(csv_path) -> list[dict]:
+    with csv_path.open(newline="") as f:
+        return list(csv.DictReader(f, delimiter=CSV_DELIMITER))
+
+
+def _write_csv_rows(csv_path, rows: list[dict]) -> None:
+    with csv_path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=rows[0].keys(), delimiter=CSV_DELIMITER)
+        writer.writeheader()
+        writer.writerows(rows)
+
 
 _EMPTY_SCHEMAS = {
     "activities": pa.schema(
@@ -180,6 +194,25 @@ def test_load_existing_annotations_reads_draft_status_by_effort_id(tmp_path) -> 
     assert load_existing_annotations(csv_path) == {1: "solo", 2: "drafted"}
 
 
+def test_load_existing_annotations_handles_semicolon_delimiter(tmp_path) -> None:
+    """Excel en locale française enregistre les CSV avec ';', pas ',' —
+    rencontré en conditions réelles en réenregistrant annotations/draft_
+    status.csv depuis Excel. On ne peut pas demander à l'utilisateur de
+    lutter contre son tableur à chaque fois."""
+    csv_path = tmp_path / "draft_status.csv"
+    csv_path.write_text("effort_id;date;draft_status\n1;2024-01-01;solo\n2;2024-01-02;drafted\n")
+
+    assert load_existing_annotations(csv_path) == {1: "solo", 2: "drafted"}
+
+
+def test_load_existing_annotations_handles_crlf_line_endings(tmp_path) -> None:
+    """Excel écrit aussi en CRLF (Windows), pas juste LF."""
+    csv_path = tmp_path / "draft_status.csv"
+    csv_path.write_bytes(b"effort_id,draft_status\r\n1,solo\r\n")
+
+    assert load_existing_annotations(csv_path) == {1: "solo"}
+
+
 # ---- generate_draft_tagging_csv (intégration) ---------------------------------------------
 
 
@@ -206,8 +239,7 @@ def test_generate_draft_tagging_csv_creates_sorted_csv_with_unknown_status(tmp_p
 
     generate_draft_tagging_csv(conn, csv_path, mass_kg=91.0, cp_fit=cp_fit)
 
-    with csv_path.open(newline="") as f:
-        rows = list(csv.DictReader(f))
+    rows = _read_csv_rows(csv_path)
 
     assert len(rows) == 1
     assert rows[0]["effort_id"] == "1"
@@ -247,8 +279,7 @@ def test_generate_draft_tagging_csv_sorts_by_gap_descending(tmp_path) -> None:
 
     generate_draft_tagging_csv(conn, csv_path, mass_kg=91.0, cp_fit=cp_fit)
 
-    with csv_path.open(newline="") as f:
-        rows = list(csv.DictReader(f))
+    rows = _read_csv_rows(csv_path)
 
     gaps = [float(r["gap_s"]) for r in rows]
     assert gaps == sorted(gaps, reverse=True)
@@ -265,14 +296,10 @@ def test_generate_draft_tagging_csv_preserves_manual_annotations_across_runs(tmp
     )
 
     # annotation manuelle, comme si l'utilisateur avait édité le CSV
-    with csv_path.open(newline="") as f:
-        rows = list(csv.DictReader(f))
+    rows = _read_csv_rows(csv_path)
     rows[0]["draft_status"] = "drafted"
     predicted_time_before = rows[0]["predicted_time_s"]
-    with csv_path.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=rows[0].keys())
-        writer.writeheader()
-        writer.writerows(rows)
+    _write_csv_rows(csv_path, rows)
 
     # relance avec un modèle DIFFÉRENT (CP change) : le temps prédit doit
     # changer, mais pas l'annotation manuelle
@@ -280,8 +307,7 @@ def test_generate_draft_tagging_csv_preserves_manual_annotations_across_runs(tmp
         conn, csv_path, mass_kg=91.0, cp_fit=CriticalPowerFit(300.0, 15_000.0, 0.9, 5, (180, 1200))
     )
 
-    with csv_path.open(newline="") as f:
-        rows_after = list(csv.DictReader(f))
+    rows_after = _read_csv_rows(csv_path)
 
     assert rows_after[0]["draft_status"] == "drafted"  # préservé
     assert rows_after[0]["predicted_time_s"] != predicted_time_before  # recalculé
@@ -294,13 +320,9 @@ def test_generate_draft_tagging_csv_appends_new_efforts_as_unknown(tmp_path) -> 
     cp_fit = CriticalPowerFit(250.0, 15_000.0, 0.9, 5, (180, 1200))
 
     generate_draft_tagging_csv(conn, csv_path, mass_kg=91.0, cp_fit=cp_fit)
-    with csv_path.open(newline="") as f:
-        rows = list(csv.DictReader(f))
+    rows = _read_csv_rows(csv_path)
     rows[0]["draft_status"] = "solo"
-    with csv_path.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=rows[0].keys())
-        writer.writeheader()
-        writer.writerows(rows)
+    _write_csv_rows(csv_path, rows)
 
     # un nouvel effort apparaît dans la base (nouvelle activité)
     efforts_with_new = efforts + [
@@ -316,8 +338,7 @@ def test_generate_draft_tagging_csv_appends_new_efforts_as_unknown(tmp_path) -> 
 
     generate_draft_tagging_csv(conn2, csv_path, mass_kg=91.0, cp_fit=cp_fit)
 
-    with csv_path.open(newline="") as f:
-        rows_after = {r["effort_id"]: r for r in csv.DictReader(f)}
+    rows_after = {r["effort_id"]: r for r in _read_csv_rows(csv_path)}
 
     assert rows_after["1"]["draft_status"] == "solo"  # préservé
     assert rows_after["2"]["draft_status"] == "unknown"  # nouveau
@@ -351,8 +372,7 @@ def test_generate_draft_tagging_csv_only_includes_tracked_segments(tmp_path) -> 
         conn, csv_path, mass_kg=91.0, cp_fit=CriticalPowerFit(250.0, 15_000.0, 0.9, 5, (180, 1200))
     )
 
-    with csv_path.open(newline="") as f:
-        rows = list(csv.DictReader(f))
+    rows = _read_csv_rows(csv_path)
     assert [r["effort_id"] for r in rows] == ["1"]
 
 
@@ -370,8 +390,7 @@ def test_generate_draft_tagging_csv_handles_prediction_failure_gracefully(tmp_pa
 
     generate_draft_tagging_csv(conn, csv_path, mass_kg=91.0, cp_fit=broken_cp_fit)
 
-    with csv_path.open(newline="") as f:
-        rows = list(csv.DictReader(f))
+    rows = _read_csv_rows(csv_path)
     assert rows[0]["predicted_time_s"] == ""
     assert rows[0]["gap_s"] == ""
     assert rows[0]["draft_status"] == "unknown"  # le reste de la ligne reste exploitable
