@@ -235,6 +235,24 @@ longs efforts que sur les courts).
 comme pour T-17, à reconsidérer avec plus de tags `solo`/`pr_rank`
 disponibles.
 
+## Scénarios de draft (T-19/T-20)
+
+`models/draft.py` calcule un ratio de réduction du CdA solo pour 4
+scénarios (`draft_ratio_for_preset`) : `solo` (1.0, pas de draft),
+`roue_collee` et `un_metre` via la formule d'Olds (1995, paceline à un
+seul leader), `groupe` via Blocken et al. (2018, peloton — physique
+différente, blindage multi-coureurs, pas dérivée d'Olds). Détail des
+sources et de la plage de validité dans le docstring du module.
+
+`predict/scenarios.py` (`compare_draft_scenarios_for_segment`) simule un
+segment sous les 4 scénarios et calcule le gain de chacun par rapport au
+solo. `uv run python scripts/compare_draft_scenarios.py <segment_id>`
+affiche le tableau comparatif — le critère de fin de T-20.
+
+Le contraste attendu (gain fort à plat, quasi nul en forte pente) se
+confirme sur de vrais segments : `groupe` donne 47% de gain sur un
+segment quasi plat (0.1%) contre 9% sur une montée à 6.7%.
+
 ### Limites connues
 
 - Une seule activité (`10066651328`) a 63 échantillons `heartrate = -1`
