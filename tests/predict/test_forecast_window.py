@@ -1,5 +1,7 @@
 """Tests du classement des créneaux horaires sur prévision (T-27)."""
 
+import math
+
 import pytest
 
 from segment_predictor.models.power import CriticalPowerFit
@@ -63,6 +65,7 @@ def test_rank_forecast_windows_records_wind_and_temperature() -> None:
     windows = rank_forecast_windows(forecast, _CHUNK, _CP_FIT, _MASS_KG, _CDA_M2, _CRR)
 
     assert windows[0].wind_speed_ms == pytest.approx(18.0 / 3.6)
+    assert windows[0].wind_direction_rad == pytest.approx(math.pi / 2)
     assert windows[0].temperature_k == pytest.approx(15.0 + 273.15)
 
 
