@@ -4,6 +4,8 @@ C'est ici que le format "mm:ss"/"h:mm:ss" du KOM Strava est parsé —
 la couche ingest ne stocke que le JSON brut, aucun parsing là-bas.
 """
 
+import math
+
 import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -52,6 +54,8 @@ def test_build_segments_table_parses_kom_and_reads_pr(tmp_path) -> None:
             "name": "Alpe d'Huez",
             "distance": 13800.0,
             "average_grade": 8.1,
+            "start_latlng": [45.09, 6.07],
+            "end_latlng": [45.09, 6.10],
             "xoms": {"kom": "39:56"},
             "athlete_segment_stats": {"pr_elapsed_time": 3120, "pr_date": "2023-07-14T09:15:00Z"},
         },
@@ -64,6 +68,8 @@ def test_build_segments_table_parses_kom_and_reads_pr(tmp_path) -> None:
             "name": "Col de la Colombiere",
             "distance": 7500.0,
             "average_grade": 6.7,
+            "start_latlng": [45.97, 6.47],
+            "end_latlng": [45.99, 6.50],
             "xoms": {"kom": "1:02:35"},
             "athlete_segment_stats": {"pr_elapsed_time": 4500, "pr_date": "2022-05-01T08:00:00Z"},
         },
@@ -97,6 +103,8 @@ def test_build_segments_table_converts_average_grade_from_percent_to_fraction(tm
             "name": "Segment",
             "distance": 1000.0,
             "average_grade": 0.2,  # 0.2%, comme renvoyé par Strava
+            "start_latlng": [47.5, 7.4],
+            "end_latlng": [47.51, 7.41],
             "xoms": {"kom": "1:00"},
             "athlete_segment_stats": {"pr_elapsed_time": 60, "pr_date": "2023-01-01T00:00:00Z"},
         },
@@ -124,6 +132,8 @@ def test_build_segments_table_handles_never_ridden_segment_across_files(tmp_path
             "name": "Jamais roulé",
             "distance": 2000.0,
             "average_grade": 4.0,
+            "start_latlng": [47.5, 7.4],
+            "end_latlng": [47.51, 7.41],
             "xoms": {"kom": "1:26"},
             "athlete_segment_stats": {
                 "pr_elapsed_time": None,
@@ -140,6 +150,8 @@ def test_build_segments_table_handles_never_ridden_segment_across_files(tmp_path
             "name": "Déjà roulé",
             "distance": 3000.0,
             "average_grade": 3.0,
+            "start_latlng": [45.97, 6.47],
+            "end_latlng": [45.99, 6.50],
             "xoms": {"kom": "2:00"},
             "athlete_segment_stats": {
                 "pr_elapsed_time": 180,
@@ -167,6 +179,8 @@ def test_build_segments_table_reads_effort_count(tmp_path) -> None:
             "name": "Segment",
             "distance": 1000.0,
             "average_grade": 5.0,
+            "start_latlng": [47.5, 7.4],
+            "end_latlng": [47.51, 7.41],
             "xoms": {"kom": "1:00"},
             "athlete_segment_stats": {
                 "pr_elapsed_time": 90,
@@ -194,6 +208,8 @@ def test_build_segments_table_raises_when_pr_stats_missing(tmp_path) -> None:
             "name": "Segment sans stats",
             "distance": 1000.0,
             "average_grade": 5.0,
+            "start_latlng": [47.5, 7.4],
+            "end_latlng": [47.51, 7.41],
             "xoms": {"kom": "1:00"},
             # pas de athlete_segment_stats
         },
@@ -215,6 +231,8 @@ def test_build_segments_table_replaces_existing_table(tmp_path) -> None:
             "name": "Segment",
             "distance": 1000.0,
             "average_grade": 5.0,
+            "start_latlng": [47.5, 7.4],
+            "end_latlng": [47.51, 7.41],
             "xoms": {"kom": "1:00"},
             "athlete_segment_stats": {"pr_elapsed_time": 60, "pr_date": "2023-01-01T00:00:00Z"},
         },
@@ -227,3 +245,79 @@ def test_build_segments_table_replaces_existing_table(tmp_path) -> None:
 
     count = conn.execute("SELECT count(*) FROM segments").fetchone()[0]
     assert count == 1
+
+
+def test_build_segments_table_computes_heading_from_start_and_end_latlng(tmp_path) -> None:
+    """Cap global du segment (T-27) : approximation à l'échelle du segment
+    entier, faute d'un profil tronçon par tronçon stocké au niveau segment
+    (T-07b) — nécessaire pour que le vent (T-15/T-27) ait un sens sur un
+    vrai segment, pas juste un heading=0.0 arbitraire."""
+    raw_dir = tmp_path / "segments"
+    _write_raw_segment(
+        raw_dir,
+        {
+            "id": 1,
+            "name": "Plein est",
+            "distance": 1000.0,
+            "average_grade": 5.0,
+            "start_latlng": [45.0, 6.0],
+            "end_latlng": [45.0, 6.1],  # même latitude, longitude croissante : plein est
+            "xoms": {"kom": "1:00"},
+            "athlete_segment_stats": {"pr_elapsed_time": 60, "pr_date": "2023-01-01T00:00:00Z"},
+        },
+        "1.parquet",
+    )
+
+    conn = duckdb.connect(":memory:")
+    build_segments_table(conn, raw_dir)
+
+    heading_rad = conn.execute("SELECT heading_rad FROM segments").fetchone()[0]
+    assert heading_rad == pytest.approx(math.pi / 2, abs=1e-3)
+
+
+def test_build_segments_table_reads_start_lat_lng(tmp_path) -> None:
+    """Position de référence pour interroger la météo (T-27) — le point de
+    départ du segment, pas un milieu recalculé : assez précis pour une
+    grille météo bien plus large qu'un segment."""
+    raw_dir = tmp_path / "segments"
+    _write_raw_segment(
+        raw_dir,
+        {
+            "id": 1,
+            "name": "Segment",
+            "distance": 1000.0,
+            "average_grade": 5.0,
+            "start_latlng": [45.123, 6.456],
+            "end_latlng": [45.13, 6.46],
+            "xoms": {"kom": "1:00"},
+            "athlete_segment_stats": {"pr_elapsed_time": 60, "pr_date": "2023-01-01T00:00:00Z"},
+        },
+        "1.parquet",
+    )
+
+    conn = duckdb.connect(":memory:")
+    build_segments_table(conn, raw_dir)
+
+    row = conn.execute("SELECT start_lat, start_lng FROM segments").fetchone()
+    assert row == pytest.approx((45.123, 6.456))
+
+
+def test_build_segments_table_raises_when_latlng_missing(tmp_path) -> None:
+    raw_dir = tmp_path / "segments"
+    _write_raw_segment(
+        raw_dir,
+        {
+            "id": 1,
+            "name": "Segment sans coordonnées",
+            "distance": 1000.0,
+            "average_grade": 5.0,
+            "xoms": {"kom": "1:00"},
+            "athlete_segment_stats": {"pr_elapsed_time": 60, "pr_date": "2023-01-01T00:00:00Z"},
+            # pas de start_latlng / end_latlng
+        },
+        "1.parquet",
+    )
+
+    conn = duckdb.connect(":memory:")
+    with pytest.raises(KeyError):
+        build_segments_table(conn, raw_dir)

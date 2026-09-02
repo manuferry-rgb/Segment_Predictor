@@ -19,6 +19,8 @@ import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from segment_predictor.models.segment import bearing_rad
+
 # "4:12" (mm:ss) ou "1:02:35" (h:mm:ss). Le groupe des heures est optionnel.
 _DURATION_PATTERN = re.compile(r"^(?:(\d+):)?(\d{1,2}):(\d{2})$")
 # "53s" : format à part pour les segments sous la minute (pas de ":"),
@@ -53,6 +55,8 @@ def _segment_to_row(raw_segment: dict) -> dict:
     erreur à masquer, juste un PR qui n'existe pas encore.
     """
     stats = raw_segment["athlete_segment_stats"]
+    start_lat, start_lng = raw_segment["start_latlng"]
+    end_lat, end_lng = raw_segment["end_latlng"]
     return {
         "id": raw_segment["id"],
         "name": raw_segment["name"],
@@ -63,6 +67,18 @@ def _segment_to_row(raw_segment: dict) -> dict:
         # (T-16), en branchant enfin cette colonne sur la physique : un
         # 0.2% traité comme 20% donnait un temps prédit ~5x trop long.
         "average_grade": raw_segment["average_grade"] / 100.0,
+        # Cap GLOBAL du segment (T-27), pas tronçon par tronçon : on n'a
+        # que start_latlng/end_latlng ici, pas de profil détaillé au niveau
+        # segment (T-07b). Nécessaire pour que le vent (T-15) ait un sens
+        # dans l'approximation "un seul tronçon" (T-16/T-17/T-20) — sans ça
+        # heading_rad valait 0.0 en dur partout, un vent "de face" n'aurait
+        # rien voulu dire pour un segment qui ne va pas plein nord.
+        "heading_rad": bearing_rad(start_lat, start_lng, end_lat, end_lng),
+        # Position de référence pour interroger la météo (T-27) — le
+        # départ du segment, pas un milieu recalculé : suffisamment
+        # précis pour une grille météo bien plus large qu'un segment.
+        "start_lat": start_lat,
+        "start_lng": start_lng,
         "kom_seconds": parse_strava_duration(raw_segment["xoms"]["kom"]),
         "pr_seconds": stats.get("pr_elapsed_time"),
         "pr_date": stats.get("pr_date"),
