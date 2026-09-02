@@ -309,6 +309,35 @@ d'appareil connecté pour HRV/sommeil pour l'instant). À reconsidérer
 pour T-24 (modèle de forme), qui devra composer avec des features très
 manquantes.
 
+## Indice de performance (T-23)
+
+`models/form.py` : `performance_index(actual_power_w, cp_fit, duration_s)`
+= puissance réelle / (CP + W'/durée) — même plage de validité que le
+modèle CP (T-09), `ValueError` explicite en dehors.
+
+Le filtre "effort maximal" (demandé et documenté par le ticket) :
+`is_near_maximal_effort` compare la MMP de l'effort au **record glissant
+à cette date** (le meilleur jamais vu jusque-là, pas le record absolu
+toutes dates confondues), seuil à 95%. Comparer au record absolu aurait
+fait disparaître rétroactivement de vrais efforts à bloc anciens dès
+qu'un record plus récent les dépasse — biais discuté et écarté avant de
+coder.
+
+`calibrate/form.py` (`compute_performance_index_series`) parcourt les
+activités par date croissante, calcule la MMP à chaque durée de
+référence (mêmes durées que le fit CP, T-16), tient le record glissant à
+jour au fil de l'eau, et calcule l'indice pour les efforts qui passent le
+filtre. `uv run python scripts/plot_performance_index.py` sort la série
+(critère de fin du ticket).
+
+Résultat réel (2021-2026) : 225 points sur 7 durées, indice moyen 0.87.
+Tendance nette de ~0.5-0.7 en 2021 vers ~0.95-1.0 en 2025-2026 —
+cohérent avec le choix (déjà documenté ailleurs, T-17/T-21) d'utiliser
+le CP *actuel*, pas un CP recalculé à chaque date : les anciens "records
+du moment" paraissent logiquement loin du plafond de forme le plus
+récent, ce n'est pas un signe de mauvaise forme passée mais l'effet
+mécanique de comparer à un plafond qui n'existait pas encore.
+
 ### Limites connues
 
 - Une seule activité (`10066651328`) a 63 échantillons `heartrate = -1`
