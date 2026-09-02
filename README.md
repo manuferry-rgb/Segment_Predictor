@@ -376,6 +376,27 @@ traitée ici : la dérive vient surtout du choix d'un CP fixe (T-17/T-21)
 comme référence de `performance_index`, pas forcément d'une vraie
 absence de lien forme/performance.
 
+## Bilan W' (T-25)
+
+`models/wbal.py` (`compute_w_prime_balance`) : modèle de Skiba, seconde
+par seconde. Au-dessus de CP, dépense linéaire (`W'bal -= (puissance -
+CP)·dt`) ; en dessous, récupération exponentielle vers W' avec une
+constante de temps `recovery_time_constant_s(déficit)` = 546·exp(-0.01·
+déficit) + 316 — plus lente juste sous CP (862s), plus rapide au repos
+complet (vers 316s). Constantes vérifiées contre une source indépendante
+documentant l'algorithme de Skiba, pas recopiées de mémoire (lien dans
+le docstring du module).
+
+Aucun plancher artificiel à 0 : un bilan négatif est un résultat valide
+(l'effort modélisé dépasse ce que W' permet), pas une erreur cachée — la
+contrainte W' ≥ 0 sera imposée explicitement là où elle a un sens (T-26,
+l'optimisation de pacing), pas ici.
+
+Critère de fin du ticket (tests sur profils synthétiques) : dépense
+linéaire vérifiée analytiquement, récupération vérifiée plus lente près
+de CP qu'au repos complet, pas de plancher — pas de données réelles
+nécessaires, ce module attend d'être consommé par T-26.
+
 ### Limites connues
 
 - Une seule activité (`10066651328`) a 63 échantillons `heartrate = -1`
