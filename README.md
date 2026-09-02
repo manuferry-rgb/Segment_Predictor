@@ -397,6 +397,36 @@ linéaire vérifiée analytiquement, récupération vérifiée plus lente près
 de CP qu'au repos complet, pas de plancher — pas de données réelles
 nécessaires, ce module attend d'être consommé par T-26.
 
+## Optimisation de pacing (T-26)
+
+`models/pacing.py` (`optimize_pacing`) : programmation dynamique en
+avant. État = W' restant, discrétisé sur une grille (100 niveaux par
+défaut) ; décision = puissance par tronçon, choisie parmi une grille de
+candidats (30, de 0.3×CP à 2.5×CP) ; transition = durée du tronçon
+(`cyclist_speed_from_power`, T-11) + nouveau W'bal
+(`w_prime_balance_step`, T-25), toute transition qui ferait passer W'
+sous 0 étant écartée — la contrainte du ticket est imposée directement
+dans la recherche, pas vérifiée après coup. Optimisation clé : la durée
+d'un tronçon à une puissance donnée ne dépend pas de l'état W', donc
+précalculée une seule fois par (tronçon, puissance) plutôt que pour
+chaque état de la grille.
+
+Critère de fin du ticket vérifié sur un segment synthétique avec relief
+(montée à 8% puis légère descente) : la DP trouve **183.3s contre
+203.9s** pour le meilleur profil à puissance constante
+(`simulate_segment_time`, T-13) — **10% de gain**, calculé en ~1ms.
+Le profil trouvé pousse fort en montée (549W, >2×CP) et lève nettement
+le pied en descente (246W) : cohérent avec l'intuition physique (la
+puissance se traduit presque directement en vitesse en montée, alors
+que le coût aéro cubique rend un watt de plus beaucoup moins rentable
+en vitesse sur le plat/en descente).
+
+La discrétisation de l'état W' est une approximation assumée : un
+profil "faisable" au sens de la grille peut, reconstruit en continu,
+dériver très légèrement sous 0 (de l'ordre d'un pas de grille, quelques
+centaines de joules avec les réglages par défaut) — pas un bug, la
+précision s'affine avec `n_w_bal_levels` au prix du temps de calcul.
+
 ### Limites connues
 
 - Une seule activité (`10066651328`) a 63 échantillons `heartrate = -1`
