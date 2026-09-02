@@ -253,6 +253,31 @@ Le contraste attendu (gain fort à plat, quasi nul en forte pente) se
 confirme sur de vrais segments : `groupe` donne 47% de gain sur un
 segment quasi plat (0.1%) contre 9% sur une montée à 6.7%.
 
+## Charge d'entraînement (T-21)
+
+`models/power.py` calcule la puissance normalisée (`normalized_power`,
+algorithme de Coggan : moyenne glissante 30s, puissance 4, racine 4e) et
+le TSS (`training_stress_score`) par activité, avec le CP calibré (T-16)
+comme proxy de FTP — approximation documentée dans le docstring (pas de
+tests FTP historiques datés pour faire autrement).
+
+`models/training_load.py` implémente le modèle de Banister : CTL
+(forme, constante de temps 42j), ATL (fatigue, 7j), TSB = CTL - ATL de
+la veille (forme avec laquelle on aborde la séance du jour, pas
+influencée par elle). `calibrate/training_load.py` agrège le TSS réel
+jour par jour depuis `main.activities`/`main.streams` (plusieurs
+sorties le même jour s'additionnent, un jour sans sortie compte 0 et
+décharge quand même la forme) et fait tourner la récursion sur tout
+l'historique.
+
+`uv run python scripts/plot_training_load.py` génère les courbes
+(`data/training_load_t21.png`, gitignoré). Critère de fin du ticket
+("courbes cohérentes avec mon vécu") validé à l'œil sur l'historique
+réel (2021-2026) : quasi rien avant fin 2023 (peu de sorties à capteur
+de puissance sur cette période), un rythme annuel de blocs/récup net
+ensuite, et un gros creux de TSB (~-45) suivi d'un rebond marqué
+mi-2026, reconnu comme cohérent.
+
 ### Limites connues
 
 - Une seule activité (`10066651328`) a 63 échantillons `heartrate = -1`

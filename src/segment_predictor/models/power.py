@@ -94,6 +94,77 @@ def mean_maximal_power_curve(watts: np.ndarray, durations_s: Iterable[int]) -> d
     return {duration_s: mean_maximal_power(watts, duration_s) for duration_s in durations_s}
 
 
+# Fenêtre standard de l'algorithme de Coggan pour la puissance normalisée —
+# pas un paramètre à ajuster au cas par cas, la définition elle-même fixe 30s.
+NORMALIZED_POWER_WINDOW_S = 30
+
+
+def normalized_power(watts: np.ndarray) -> float:
+    """Puissance normalisée (NP, algorithme de Coggan) : moyenne glissante
+    30s, chaque valeur élevée à la puissance 4, moyenne de ces valeurs,
+    racine 4e. Le exposant 4 pénalise fortement les pics par rapport à une
+    moyenne simple — deux sorties de même puissance moyenne mais l'une
+    "en dents de scie" (sprints/récup) coûte physiologiquement plus cher
+    que l'autre à rythme constant, et NP le capture alors qu'une moyenne
+    simple ne le distingue pas.
+
+    `watts` : grille 1 Hz (voir resample_to_uniform_seconds), NaN = trou.
+    Une fenêtre de 30s touchant un NaN est exclue, comme pour
+    mean_maximal_power. Contrairement à mean_maximal_power (qui renvoie
+    NaN si rien n'est valide — pensé pour être agrégé sur plein
+    d'activités où un trou isolé est tolérable), ici une ValueError est
+    levée explicitement : NP alimente directement training_stress_score
+    (T-21) par activité, un NaN silencieux corromprait toute la
+    récursion de Banister en aval sans qu'on s'en aperçoive.
+    """
+    watts = np.asarray(watts, dtype=float)
+    window_s = NORMALIZED_POWER_WINDOW_S
+    if len(watts) < window_s:
+        raise ValueError(
+            f"stream de {len(watts)}s trop court pour une fenêtre de {window_s}s (NP non définie)"
+        )
+
+    is_valid = ~np.isnan(watts)
+    filled = np.where(is_valid, watts, 0.0)
+
+    cumsum = np.concatenate(([0.0], np.cumsum(filled)))
+    valid_cumsum = np.concatenate(([0], np.cumsum(is_valid.astype(np.int64))))
+
+    window_sums = cumsum[window_s:] - cumsum[:-window_s]
+    window_valid_counts = valid_cumsum[window_s:] - valid_cumsum[:-window_s]
+    fully_valid = window_valid_counts == window_s
+
+    if not np.any(fully_valid):
+        raise ValueError(f"aucune fenêtre de {window_s}s entièrement valide (stream trop troué)")
+
+    rolling_avg_w = window_sums[fully_valid] / window_s
+    return float(np.mean(rolling_avg_w**4) ** 0.25)
+
+
+def training_stress_score(
+    duration_s: float, normalized_power_w: float, threshold_power_w: float
+) -> float:
+    """TSS (Training Stress Score, définition de Coggan) : charge d'une
+    séance, calibrée pour qu'1h pile à la puissance seuil vaille 100.
+
+    `threshold_power_w` : ici le CP calibré (T-16/T-17), utilisé comme
+    proxy de la FTP — CP et FTP ne sont pas rigoureusement identiques
+    (CP est un seuil théorique du modèle à 2 paramètres, FTP un protocole
+    de test standardisé), mais assez proches en pratique pour cet usage,
+    et on n'a pas d'historique de tests FTP datés. Approximation
+    documentée, pas cachée.
+
+    IF (Intensity Factor) = normalized_power_w / threshold_power_w :
+    intermédiaire nommé pour rester lisible, pas juste pour factoriser du
+    calcul.
+    """
+    if threshold_power_w <= 0:
+        raise ValueError(f"threshold_power_w doit être positif, reçu {threshold_power_w}")
+
+    intensity_factor = normalized_power_w / threshold_power_w
+    return duration_s * normalized_power_w * intensity_factor / (threshold_power_w * 3600) * 100
+
+
 # Plage par défaut du modèle CP à 2 paramètres : en dessous, la puissance est
 # dominée par des facteurs neuromusculaires/anaérobies (le modèle diverge vers
 # l'infini quand t->0, ce qui est physiologiquement absurde) ; au-dessus, CP
