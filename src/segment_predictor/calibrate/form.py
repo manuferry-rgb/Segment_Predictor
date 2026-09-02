@@ -10,6 +10,7 @@ import duckdb
 import numpy as np
 
 from segment_predictor.calibrate.draft_tagging import DEFAULT_CP_FIT_DURATIONS_S, fit_current_cp
+from segment_predictor.calibrate.training_load import compute_training_load_from_db
 from segment_predictor.models.form import (
     DEFAULT_MAXIMAL_EFFORT_THRESHOLD,
     is_near_maximal_effort,
@@ -97,3 +98,59 @@ def compute_performance_index_series(
             best_so_far_w[duration_s] = max(previous_best_w or 0.0, mmp_w)
 
     return points
+
+
+# Colonnes de build_form_regression_dataset, dans l'ordre. Volontairement
+# SANS les 4 champs wellness (T-22 : hrv, sleep_s, resting_heart_rate_bpm,
+# weight_kg) : en conditions réelles ils sont quasi tous vides (0 hrv,
+# 0 sleep_s, resting_heart_rate_bpm constant sur 49 jours, 1 seule valeur
+# weight_kg — voir le README, section T-22). Les inclure demanderait une
+# imputation qui inventerait des données absentes plutôt que de refléter
+# un vrai signal de forme.
+FORM_REGRESSION_FEATURE_NAMES = ("ctl", "atl", "tsb", "duration_s")
+
+
+def build_form_regression_dataset(
+    conn: duckdb.DuckDBPyConnection,
+    cp_fit: CriticalPowerFit | None = None,
+    durations_s: Iterable[int] = DEFAULT_CP_FIT_DURATIONS_S,
+    threshold: float = DEFAULT_MAXIMAL_EFFORT_THRESHOLD,
+) -> tuple[np.ndarray, np.ndarray, list[date]]:
+    """Joint la série de l'indice de performance (T-23,
+    compute_performance_index_series) au CTL/ATL/TSB de CHAQUE DATE EXACTE
+    (T-21, compute_training_load_from_db) — jamais un CTL/ATL/TSB futur ou
+    passé approché, l'égalité de date est stricte. `duration_s` est ajouté
+    comme 4e feature : le modèle CP n'aligne pas parfaitement les courbes
+    par durée (visible dans le graphique T-23), l'inclure sépare ce biais
+    résiduel du modèle de l'effet "forme" qu'on veut isoler.
+
+    Retourne (X, y, dates) prêts pour fit_ridge/temporal_cross_validate_
+    ridge (T-24) — X dans l'ordre de FORM_REGRESSION_FEATURE_NAMES.
+    """
+    if cp_fit is None:
+        cp_fit = fit_current_cp(conn)
+
+    index_points = compute_performance_index_series(
+        conn, cp_fit=cp_fit, durations_s=durations_s, threshold=threshold
+    )
+    if not index_points:
+        raise ValueError("aucun point d'indice de performance disponible (T-23) : rien à joindre")
+
+    load_dates, load_points = compute_training_load_from_db(conn, cp_fit=cp_fit)
+    load_by_date = dict(zip(load_dates, load_points, strict=True))
+
+    rows: list[list[float]] = []
+    dates: list[date] = []
+    y: list[float] = []
+    for point in index_points:
+        load = load_by_date.get(point.date)
+        if load is None:
+            # ne devrait pas arriver : compute_training_load_from_db couvre toute la plage
+            # d'activités, dont celle-ci fait partie. Pas de valeur inventée si ça arrive
+            # quand même — on saute juste ce point plutôt que d'approcher une date voisine.
+            continue
+        rows.append([load.ctl, load.atl, load.tsb, float(point.duration_s)])
+        dates.append(point.date)
+        y.append(point.index)
+
+    return np.array(rows), np.array(y), dates
