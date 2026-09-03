@@ -7,6 +7,7 @@ en tronçons, pente + cap par tronçon) -> `simulate_segment_time` (temps
 prédit, à la puissance soutenable par le modèle CP).
 """
 
+import itertools
 import math
 from dataclasses import dataclass
 
@@ -62,6 +63,34 @@ def smooth_altitude(
     window_sums = cumsum[hi_idx] - cumsum[lo_idx]
     window_counts = hi_idx - lo_idx
     return window_sums / window_counts
+
+
+# Rayon terrestre moyen (m), sphère IUGG — approximation standard pour une
+# distance grand cercle à l'échelle d'un segment (quelques km) : l'écart
+# avec un modèle ellipsoïdal (WGS84) est de l'ordre de 0.3%, largement
+# sous le bruit d'arrondi du polyline lui-même (précision 1e-5°, T-32).
+_EARTH_RADIUS_M = 6_371_000.0
+
+
+def haversine_distance_m(
+    lat1_deg: float, lng1_deg: float, lat2_deg: float, lng2_deg: float
+) -> float:
+    """Distance grand cercle (m) entre deux points GPS, formule de haversine.
+
+    Publique (T-32) comme bearing_rad : réutilisée par
+    segment_chunks_from_polyline pour la longueur de chaque tronçon,
+    faute de `distance_m` fourni (contrairement à chunk_segment, qui le
+    reçoit d'un vrai stream Strava plutôt que de le recalculer).
+    """
+    lat1 = math.radians(lat1_deg)
+    lat2 = math.radians(lat2_deg)
+    delta_lat = math.radians(lat2_deg - lat1_deg)
+    delta_lng = math.radians(lng2_deg - lng1_deg)
+    a = (
+        math.sin(delta_lat / 2) ** 2
+        + math.cos(lat1) * math.cos(lat2) * math.sin(delta_lng / 2) ** 2
+    )
+    return 2 * _EARTH_RADIUS_M * math.asin(math.sqrt(a))
 
 
 def bearing_rad(lat1_deg: float, lng1_deg: float, lat2_deg: float, lng2_deg: float) -> float:
@@ -153,6 +182,55 @@ def chunk_segment(
                 ),
             )
         )
+    return chunks
+
+
+def segment_chunks_from_polyline(
+    points: list[tuple[float, float]], average_grade: float
+) -> list[SegmentChunk]:
+    """Un SegmentChunk par paire de points consécutifs d'un polyline décodé
+    (T-32, `models.polyline.decode_polyline`) — un cap RÉEL par tronçon
+    (bearing_rad) au lieu de l'unique cap moyen start->end de
+    `heading_rad` (T-27). C'est tout l'objet du ticket : un vent projeté
+    correctement le long d'un segment qui tourne ou boucle, pas un seul
+    vent de face/dos appliqué à toute la distance (vérifié sur HBFH, un
+    segment en boucle, voir test_segment_chunks_from_polyline_matches_
+    real_strava_segment : le cap y varie sur presque tout le cercle).
+
+    Limite ASSUMÉE, pas cachée : `average_grade` (pente moyenne Strava du
+    segment ENTIER) est appliquée telle quelle à CHAQUE tronçon — aucune
+    source d'altitude par tronçon n'est disponible depuis un polyline
+    (lat/lng seulement, contrairement à chunk_segment qui reçoit un vrai
+    stream d'altitude). Seul le cap varie réellement ici, pas la pente
+    (dénivelé hors périmètre de ce ticket, voir ROADMAP.md T-32).
+
+    Deux points consécutifs identiques (arrondi à 1e-5° du polyline, le
+    tracé peut repasser exactement par un point déjà visité) sont
+    ignorés plutôt que de produire un tronçon de longueur nulle et un
+    cap indéfini (atan2(0, 0)).
+    """
+    if len(points) < 2:
+        raise ValueError(f"il faut au moins 2 points pour découper un tronçon, reçu {len(points)}")
+
+    chunks = []
+    cumulative_distance_m = 0.0
+    for (lat1, lng1), (lat2, lng2) in itertools.pairwise(points):
+        length_m = haversine_distance_m(lat1, lng1, lat2, lng2)
+        if length_m <= 0:
+            continue  # points consécutifs identiques : rien à découper ici
+        chunks.append(
+            SegmentChunk(
+                start_distance_m=cumulative_distance_m,
+                length_m=length_m,
+                grade=average_grade,
+                heading_rad=bearing_rad(lat1, lng1, lat2, lng2),
+            )
+        )
+        cumulative_distance_m += length_m
+
+    if not chunks:
+        raise ValueError("tous les points du polyline sont identiques : aucun tronçon à produire")
+
     return chunks
 
 

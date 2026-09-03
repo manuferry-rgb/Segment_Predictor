@@ -11,11 +11,14 @@ import numpy as np
 import pytest
 
 from segment_predictor.models.physics import cyclist_speed_from_power
+from segment_predictor.models.polyline import decode_polyline
 from segment_predictor.models.segment import (
     STANDARD_AIR_DENSITY_KG_M3,
     SegmentChunk,
     bearing_rad,
     chunk_segment,
+    haversine_distance_m,
+    segment_chunks_from_polyline,
     simulate_segment_time,
     smooth_altitude,
 )
@@ -146,6 +149,128 @@ def test_chunk_segment_raises_on_non_positive_chunk_length() -> None:
     zeros = np.zeros_like(distance_m)
     with pytest.raises(ValueError, match="chunk_length_m"):
         chunk_segment(distance_m, zeros, zeros, zeros, chunk_length_m=0.0)
+
+
+# ---- haversine_distance_m / segment_chunks_from_polyline (T-32) ------------------------
+
+
+def test_haversine_distance_m_matches_known_distance_at_equator() -> None:
+    """1° de latitude ou de longitude à l'équateur vaut ~111.32km — même
+    approximation que METERS_PER_DEGREE, déjà utilisée plus haut pour
+    construire des fixtures de cap connu."""
+    north = haversine_distance_m(0.0, 0.0, 1.0, 0.0)
+    east = haversine_distance_m(0.0, 0.0, 0.0, 1.0)
+    assert north == pytest.approx(METERS_PER_DEGREE, rel=0.01)
+    assert east == pytest.approx(METERS_PER_DEGREE, rel=0.01)
+
+
+def test_haversine_distance_m_is_zero_for_identical_points() -> None:
+    assert haversine_distance_m(45.5, 7.4, 45.5, 7.4) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_segment_chunks_from_polyline_headings_match_known_compass_directions() -> None:
+    """Mêmes points que test_chunk_segment_headings_match_known_compass_directions
+    (nord puis est), même vérité terrain — mais depuis un polyline décodé
+    (lat/lng seuls) plutôt qu'un stream distance/altitude/latlng complet."""
+    points = [
+        (0.0, 0.0),
+        (50.0 / METERS_PER_DEGREE, 0.0),
+        (50.0 / METERS_PER_DEGREE, 50.0 / METERS_PER_DEGREE),
+    ]
+
+    chunks = segment_chunks_from_polyline(points, average_grade=0.03)
+
+    assert len(chunks) == 2
+    assert chunks[0].heading_rad == pytest.approx(0.0, abs=1e-6)  # nord
+    assert chunks[1].heading_rad == pytest.approx(math.pi / 2, abs=1e-3)  # est
+
+
+def test_segment_chunks_from_polyline_applies_average_grade_to_every_chunk() -> None:
+    """Limite ASSUMÉE du ticket T-32 : pas de profil d'altitude par tronçon
+    disponible depuis un polyline (lat/lng seulement, pas d'élévation) —
+    la même pente moyenne du segment entier est appliquée partout, seul
+    le cap varie réellement d'un tronçon à l'autre."""
+    points = [(0.0, 0.0), (50.0 / METERS_PER_DEGREE, 0.0), (100.0 / METERS_PER_DEGREE, 0.0)]
+
+    chunks = segment_chunks_from_polyline(points, average_grade=0.07)
+
+    assert all(c.grade == pytest.approx(0.07) for c in chunks)
+
+
+def test_segment_chunks_from_polyline_start_distances_are_cumulative() -> None:
+    points = [(0.0, 0.0), (50.0 / METERS_PER_DEGREE, 0.0), (100.0 / METERS_PER_DEGREE, 0.0)]
+
+    chunks = segment_chunks_from_polyline(points, average_grade=0.0)
+
+    assert chunks[0].start_distance_m == pytest.approx(0.0)
+    assert chunks[1].start_distance_m == pytest.approx(chunks[0].length_m)
+    assert chunks[1].start_distance_m == pytest.approx(50.0, rel=0.01)
+
+
+def test_segment_chunks_from_polyline_skips_duplicate_consecutive_points() -> None:
+    """Deux points GPS identiques d'affilée (arrondi à 1e-5° du polyline,
+    T-32 — peut arriver quand le tracé revient exactement sur un point
+    déjà visité) donneraient un tronçon de longueur nulle et un cap
+    indéfini (atan2(0, 0)) : ignoré plutôt que produit."""
+    points = [
+        (0.0, 0.0),
+        (0.0, 0.0),  # doublon
+        (50.0 / METERS_PER_DEGREE, 0.0),
+    ]
+
+    chunks = segment_chunks_from_polyline(points, average_grade=0.0)
+
+    assert len(chunks) == 1
+    assert chunks[0].length_m == pytest.approx(50.0, rel=0.01)
+
+
+def test_segment_chunks_from_polyline_raises_on_fewer_than_two_points() -> None:
+    with pytest.raises(ValueError, match="2 points"):
+        segment_chunks_from_polyline([(0.0, 0.0)], average_grade=0.0)
+
+
+def test_segment_chunks_from_polyline_raises_when_all_points_identical() -> None:
+    with pytest.raises(ValueError, match="identiques"):
+        segment_chunks_from_polyline([(0.0, 0.0), (0.0, 0.0)], average_grade=0.0)
+
+
+def test_segment_chunks_from_polyline_matches_real_strava_segment() -> None:
+    """Regression T-32, même polyline réel que
+    tests/models/test_polyline.py (segment HBFH, id 31159007).
+
+    Deux vérifications croisées avec des données stockées indépendamment
+    du décodage : (1) la somme des longueurs de tronçons doit retomber
+    près de `segments.distance_m` (15042.6m, rapporté par Strava
+    lui-même) ; (2) le cap doit varier largement sur ce segment en
+    boucle (départ et arrivée à 124m l'un de l'autre pour 15km de
+    tracé), PAS rester proche de l'unique heading_rad stocké pour lui
+    (262.96°, un cap quasi arbitraire vu la boucle) — c'est exactement
+    ce que ce ticket corrige.
+    """
+    encoded = (
+        "okaaH{usl@|ChChB`CdC`CLVC\\Wr@Oj@QtBAfALdCN~AL~@VxAp@dDh@zB\\~@zBxDN\\Jd@PlA^rBf@lJ"
+        "\\hCt@|Dt@zBVl@R`AZ~Ed@vEX|BDr@LtEShLUxI@dBJfHAp@Ij@Y~@g@r@g@ZoGpDm@d@a@f@wApCm@zAe@"
+        "dBu@~CKd@ATA`AHn@Nn@Rh@TXLHPDX?^Sx@u@VOn@Ob@Bh@VRZRp@NdA?f@OlA}@dEQdAGv@Qv@Gv@YfAOr@"
+        "AN@ZDPAj@d@~Ax@fBd@vAHv@CNUn@@h@C\\Ol@Q~A[xG]bGA|@@ZBRN`@|@bBfFdJrBxCt@lA`JhQ|DlHr@"
+        "`BrCfIt@hBf@r@pAxAb@t@Rl@lA|Er@~Bl@jBjBjFnAbDvA~CbAfCF^?p@MrDKfA?\\n@|Af@bABRAf@I^W"
+        "`@UJuBH_@EmEDmADyALi@B{@CsB]s@Ie@Ai@@g@McAKmAIoAOcA[MKMQ_@q@QQOEQAaANaAT_Cl@qAb@WFc@"
+        "Bk@Jm@A[Ca@E_@QaCW{A]w@KkCm@{Bk@m@IsA[i@QSMc@KKAw@Ye@WyAcAy@]g@?KCqAkBqDyCmBkB}BeCyA"
+        "wBkAwB}@uBw@gC_@{@aAwAqA_B_@a@k@i@aAk@_Ac@{@m@yBkBqB{A{@y@gImJ_BwB_E{F}AwBsQ{TYU]K]@"
+        "yAT[?i@Mu@_@oAw@oGcFcAq@[M]EiA?]Ci@WMKy@u@}@cAgA{Ai@iAkAoBSk@Mq@Gu@EkFG}@kAyFSs@iAwC"
+        "Qm@UsAIs@Ao@DSJKNEv@MdBc@h@Gl@Aj@KfDcBXKhBWbCKXEVKTMjEaExCcBdBkAdF_EvCcCbAmAtHoKRS^Yn"
+        "@WzCw@dCu@d@YNOh@iABUAWIaAa@qBg@uASe@Q[Si@MaBAuA_@wEJmACaA@U@SN_@IQ?YL}@XiANcADOJML]"
+        "LoALc@Be@C_ANoAHoANYLq@HQBWp@oCX{A`@wAR[^WRAfDPj@JfCp@dA^TLj@b@TRpAxATRVLVHZ@XERQL[H"
+        "c@tEcZ`@cBL_@jFaN`B}DpEkJ`AkB\\e@PMx@Yz@SPKNONWTo@zCcJ"
+    )
+    points = decode_polyline(encoded)
+
+    chunks = segment_chunks_from_polyline(points, average_grade=0.001)
+
+    total_length_m = sum(c.length_m for c in chunks)
+    assert total_length_m == pytest.approx(15042.6, rel=0.005)
+
+    headings_deg = [math.degrees(c.heading_rad) for c in chunks]
+    assert max(headings_deg) - min(headings_deg) > 180  # loin d'un cap unique
 
 
 # ---- simulate_segment_time (T-13) --------------------------------------------------------
