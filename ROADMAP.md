@@ -198,3 +198,26 @@ optimale et de la stratégie de pacing.
 Schéma d'architecture, décisions techniques et leurs justifications,
 chiffres de performance du modèle, limites connues.
 *Critère de fin* : lisible par un recruteur en 3 minutes.
+
+---
+
+## Phase 10 — Fidélité du modèle
+
+**T-32 — Cap réel par tronçon depuis le polyline**
+Depuis T-27, le vent est projeté sur un seul cap moyen par segment
+(`heading_rad`, calculé start->end à vol d'oiseau) : correct pour un
+segment globalement rectiligne, faux pour un virage serré ou une
+boucle (ex. HBFH, où start et end ne sont distants que de 124m pour
+15km de tracé réel — le "cap" actuel n'y veut rien dire).
+`segments.polyline` (déjà stocké tel quel, étape préparatoire de ce
+ticket) contient le tracé
+réel encodé (format Google Polyline). Le décoder en séquence de
+points GPS, en tirer un cap par tronçon (réutiliser `chunk_segment`,
+T-12, avec une altitude constante faute de profil d'altitude au
+niveau segment), puis brancher ces tronçons dans `forecast_window.py`
+(vent) au lieu de l'unique `SegmentChunk` actuel. Ne résout pas le
+dénivelé (aucun profil d'altitude par segment disponible) — seulement
+l'orientation face au vent.
+*Critère de fin* : sur un segment en boucle ou tortueux, le vent
+prédit n'est plus un seul vent de face/dos appliqué à toute la
+distance, mais varie tronçon par tronçon comme en vrai.
