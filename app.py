@@ -181,6 +181,11 @@ if st.button("Chercher la meilleure fenêtre", type="primary"):
     st.subheader(f"Meilleure fenêtre : {_format_day_hour(best.time)}")
     col1, col2, col3 = st.columns(3)
     col1.metric("Temps prédit", _format_mmss(best.predicted_time_s))
+    # Puissance requise (T-31) : CP + W'/t pour CE créneau, vent inclus —
+    # à comparer à ta puissance de PR réelle affichée plus bas, pas à
+    # "Puissance recommandée" en fin de page (celle-ci ignore le vent,
+    # voir son propre avertissement).
+    col1.caption(f"Puissance requise : {best.required_power_w:.0f} W")
     col2.metric(
         "Vent",
         f"{best.wind_speed_ms * 3.6:.0f} km/h",
@@ -267,6 +272,7 @@ if st.button("Chercher la meilleure fenêtre", type="primary"):
             {
                 "Créneau": _format_day_hour(w.time),
                 "Temps": _format_mmss(w.predicted_time_s),
+                "Puissance (W)": round(w.required_power_w),
                 "Vent (km/h)": round(w.wind_speed_ms * 3.6),
                 "Direction": _compass_label(w.wind_direction_rad),
                 "Température (°C)": round(w.temperature_k - 273.15),
@@ -282,7 +288,9 @@ if st.button("Chercher la meilleure fenêtre", type="primary"):
         "⚠️ Un seul tronçon par segment — aucun profil pente/distance détaillé n'est "
         "stocké au niveau segment (T-07b jamais fait). La puissance recommandée est "
         "donc constante sur tout le segment : pas une vraie stratégie variable, juste "
-        "la puissance soutenable optimale pour ce profil simplifié."
+        "la puissance soutenable optimale pour ce profil simplifié. Calculée SANS vent "
+        "(contrairement à la puissance requise ci-dessus, propre à la meilleure fenêtre) "
+        "— les deux chiffres ne sont pas censés coïncider."
     )
     pacing_result = optimize_pacing(
         [chunk], cp_fit.cp_watts, cp_fit.w_prime_joules, mass_kg, effective_cda_m2, cda_crr_fit.crr

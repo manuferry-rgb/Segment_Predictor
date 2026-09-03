@@ -15,6 +15,7 @@ from segment_predictor.models.power import (
     mean_maximal_power_curve,
     normalized_power,
     resample_to_uniform_seconds,
+    sustainable_power_w,
     training_stress_score,
 )
 
@@ -292,6 +293,31 @@ def test_fit_raises_when_fewer_than_two_valid_points_in_range() -> None:
     mmp = _hyperbola(durations, 250.0, 20_000.0)
     with pytest.raises(ValueError, match="point"):
         fit_critical_power(durations, mmp)
+
+
+# ---- sustainable_power_w (T-31) ---------------------------------------------------------------
+
+
+def test_sustainable_power_matches_the_cp_hyperbola_by_construction() -> None:
+    """P = CP + W'/t, exactement la formule ajustée par fit_critical_power —
+    pas une nouvelle méthode, juste le même modèle évalué en avant plutôt
+    qu'ajusté en arrière."""
+    power_w = sustainable_power_w(cp_watts=250.0, w_prime_joules=20_000.0, duration_s=1000.0)
+    assert power_w == pytest.approx(250.0 + 20_000.0 / 1000.0)
+
+
+def test_sustainable_power_approaches_cp_for_very_long_durations() -> None:
+    """Le terme W'/t s'annule quand t -> l'infini : l'asymptote du modèle
+    à 2 paramètres est CP elle-même."""
+    power_w = sustainable_power_w(cp_watts=250.0, w_prime_joules=20_000.0, duration_s=1_000_000.0)
+    assert power_w == pytest.approx(250.0, abs=0.1)
+
+
+def test_sustainable_power_raises_on_non_positive_duration() -> None:
+    with pytest.raises(ValueError, match="duration_s"):
+        sustainable_power_w(cp_watts=250.0, w_prime_joules=20_000.0, duration_s=0.0)
+    with pytest.raises(ValueError, match="duration_s"):
+        sustainable_power_w(cp_watts=250.0, w_prime_joules=20_000.0, duration_s=-10.0)
 
 
 # ---- normalized_power (T-21) ----------------------------------------------------------------

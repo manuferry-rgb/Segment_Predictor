@@ -265,3 +265,18 @@ def fit_critical_power(
         cp_watts_std=cp_watts_std,
         w_prime_joules_std=w_prime_joules_std,
     )
+
+
+def sustainable_power_w(cp_watts: float, w_prime_joules: float, duration_s: float) -> float:
+    """Puissance soutenable par le modèle CP sur `duration_s` : P = CP + W'/t.
+
+    Même formule que la boucle de convergence de `models.segment.
+    simulate_segment_time` (T-13/T-27), extraite ici en fonction pure
+    plutôt que dupliquée : sert à AFFICHER la puissance requise pour un
+    temps prédit donné (T-31), sans changer la signature de
+    `simulate_segment_time` (déjà utilisée telle quelle par la
+    calibration, le backtest et la propagation d'incertitude).
+    """
+    if duration_s <= 0:
+        raise ValueError(f"duration_s doit être positif, reçu {duration_s}")
+    return cp_watts + w_prime_joules / duration_s

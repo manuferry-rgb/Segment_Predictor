@@ -69,6 +69,18 @@ def test_rank_forecast_windows_records_wind_and_temperature() -> None:
     assert windows[0].temperature_k == pytest.approx(15.0 + 273.15)
 
 
+def test_rank_forecast_windows_records_required_power() -> None:
+    """La puissance requise (T-31) doit correspondre au TEMPS PRÉDIT de CE
+    créneau (vent inclus) — pas à un CP+W'/t calculé sans vent, qui
+    donnerait un nombre cohérent avec aucun des deux temps affichés."""
+    forecast = _fake_forecast(["10:00"], wind_speed_kmh=[0.0], wind_direction_deg=[0.0])
+
+    windows = rank_forecast_windows(forecast, _CHUNK, _CP_FIT, _MASS_KG, _CDA_M2, _CRR)
+
+    expected_power_w = _CP_FIT.cp_watts + _CP_FIT.w_prime_joules / windows[0].predicted_time_s
+    assert windows[0].required_power_w == pytest.approx(expected_power_w)
+
+
 def test_rank_forecast_windows_returns_empty_when_all_slots_outside_range() -> None:
     forecast = _fake_forecast(
         ["02:00", "23:00"], wind_speed_kmh=[0.0, 0.0], wind_direction_deg=[0.0, 0.0]

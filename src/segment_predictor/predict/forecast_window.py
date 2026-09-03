@@ -24,7 +24,7 @@ import duckdb
 import httpx
 
 from segment_predictor.ingest.open_meteo import get_forecast_weather
-from segment_predictor.models.power import CriticalPowerFit
+from segment_predictor.models.power import CriticalPowerFit, sustainable_power_w
 from segment_predictor.models.segment import SegmentChunk, simulate_segment_time
 
 DEFAULT_FORECAST_DAYS = 10
@@ -39,6 +39,12 @@ DEFAULT_MAX_HOUR = 21
 class ForecastWindow:
     time: datetime
     predicted_time_s: float
+    # Puissance CP+W'/t requise pour TENIR predicted_time_s (T-31) — donc
+    # vent de ce créneau déjà inclus, contrairement à "Puissance
+    # recommandée" dans app.py (optimize_pacing, appelé sans vent) : les
+    # deux ne sont pas censées coïncider, ne pas les confondre en lisant
+    # l'UI.
+    required_power_w: float
     wind_speed_ms: float
     wind_direction_rad: float
     temperature_k: float
@@ -103,6 +109,9 @@ def rank_forecast_windows(
             ForecastWindow(
                 time=time,
                 predicted_time_s=predicted_time_s,
+                required_power_w=sustainable_power_w(
+                    cp_fit.cp_watts, cp_fit.w_prime_joules, predicted_time_s
+                ),
                 wind_speed_ms=wind_speed_ms,
                 wind_direction_rad=wind_direction_rad,
                 temperature_k=temperature_k,
