@@ -235,3 +235,15 @@ quand au moins 3/4 de la distance est favorable.
 *Critère de fin* : un tableau de tous les segments favoris, triés par
 fraction de vent favorable décroissante, pour l'heure restante
 d'aujourd'hui.
+
+**T-34 — Vitesse de vent favorable réelle plutôt qu'une fraction**
+`tailwind_fraction` (T-33) était binaire tronçon par tronçon : 2 km/h
+et 20 km/h de vent de dos sur la même moitié d'un segment comptaient
+pareil. Remplacée par `average_tailwind_speed_ms` : moyenne pondérée
+par la longueur des tronçons de la vitesse de vent favorable (m/s,
+signée — positive aide, négative freine), une vraie grandeur physique.
+Le seuil arbitraire "3/4 de la distance" (T-33) devient "vitesse
+moyenne > 0" dans `pages/1_Segments_du_jour.py`.
+*Critère de fin* : la colonne "Vent favorable" affiche un km/h signé
+(ex. "+17 km/h"), le tri et le seuil "favorable" utilisent cette même
+valeur.
