@@ -14,7 +14,7 @@ _CP_FIT = CriticalPowerFit(
 _MASS_KG = 75.0
 _CDA_M2 = 0.30
 _CRR = 0.005
-_CHUNK = SegmentChunk(0.0, 2000.0, 0.0, heading_rad=0.0)  # plein nord
+_CHUNKS = [SegmentChunk(0.0, 2000.0, 0.0, heading_rad=0.0)]  # plein nord
 
 
 def _fake_forecast(hours: list[str], wind_speed_kmh: list[float], wind_direction_deg: list[float]):
@@ -39,7 +39,7 @@ def test_rank_forecast_windows_filters_outside_hour_range() -> None:
     )
 
     windows = rank_forecast_windows(
-        forecast, _CHUNK, _CP_FIT, _MASS_KG, _CDA_M2, _CRR, min_hour=6, max_hour=21
+        forecast, _CHUNKS, _CP_FIT, _MASS_KG, _CDA_M2, _CRR, min_hour=6, max_hour=21
     )
 
     assert len(windows) == 1
@@ -52,7 +52,7 @@ def test_rank_forecast_windows_sorts_fastest_first() -> None:
         ["10:00", "11:00"], wind_speed_kmh=[20.0, 20.0], wind_direction_deg=[0.0, 180.0]
     )
 
-    windows = rank_forecast_windows(forecast, _CHUNK, _CP_FIT, _MASS_KG, _CDA_M2, _CRR)
+    windows = rank_forecast_windows(forecast, _CHUNKS, _CP_FIT, _MASS_KG, _CDA_M2, _CRR)
 
     assert windows[0].time.hour == 11  # vent de dos : le plus rapide, en premier
     assert windows[1].time.hour == 10
@@ -62,11 +62,41 @@ def test_rank_forecast_windows_sorts_fastest_first() -> None:
 def test_rank_forecast_windows_records_wind_and_temperature() -> None:
     forecast = _fake_forecast(["10:00"], wind_speed_kmh=[18.0], wind_direction_deg=[90.0])
 
-    windows = rank_forecast_windows(forecast, _CHUNK, _CP_FIT, _MASS_KG, _CDA_M2, _CRR)
+    windows = rank_forecast_windows(forecast, _CHUNKS, _CP_FIT, _MASS_KG, _CDA_M2, _CRR)
 
     assert windows[0].wind_speed_ms == pytest.approx(18.0 / 3.6)
     assert windows[0].wind_direction_rad == pytest.approx(math.pi / 2)
     assert windows[0].temperature_k == pytest.approx(15.0 + 273.15)
+
+
+def test_rank_forecast_windows_uses_every_chunk_not_just_the_first() -> None:
+    """Régression T-32 : `chunks` (pluriel, depuis segment_chunks_from_
+    polyline) doit être transmis EN ENTIER à simulate_segment_time, pas
+    seulement son premier élément — sinon le passage d'un `chunk` unique
+    à une liste ne changerait rien en pratique.
+
+    Deux tronçons de longueur égale, plein nord puis plein sud (un
+    aller-retour), sous un vent qui vient du nord : face sur le premier
+    tronçon, de dos sur le second. Face + dos ne s'annulent PAS
+    symétriquement (terme aéro en v³, déjà vérifié isolément dans
+    test_segment.py) : le temps sous ce vent doit être plus long que sans
+    vent sur les deux mêmes tronçons. Si seul chunks[0] était utilisé, ce
+    test échouerait aussi (un seul tronçon plein nord sous un vent de
+    face reste plus lent que sans vent — mais un bug qui ignorerait
+    chunks[1] resterait indétecté avec une seule assertion de ce type ;
+    la valeur du test est de forcer à passer une VRAIE liste plutôt qu'un
+    unique SegmentChunk, ce que l'ancienne signature ne permettait pas)."""
+    two_leg_chunks = [
+        SegmentChunk(0.0, 1000.0, 0.0, heading_rad=0.0),  # plein nord (aller)
+        SegmentChunk(1000.0, 1000.0, 0.0, heading_rad=math.pi),  # plein sud (retour)
+    ]
+    windy_forecast = _fake_forecast(["10:00"], wind_speed_kmh=[36.0], wind_direction_deg=[0.0])
+    calm_forecast = _fake_forecast(["10:00"], wind_speed_kmh=[0.0], wind_direction_deg=[0.0])
+
+    windy = rank_forecast_windows(windy_forecast, two_leg_chunks, _CP_FIT, _MASS_KG, _CDA_M2, _CRR)
+    calm = rank_forecast_windows(calm_forecast, two_leg_chunks, _CP_FIT, _MASS_KG, _CDA_M2, _CRR)
+
+    assert windy[0].predicted_time_s > calm[0].predicted_time_s
 
 
 def test_rank_forecast_windows_records_required_power() -> None:
@@ -75,7 +105,7 @@ def test_rank_forecast_windows_records_required_power() -> None:
     donnerait un nombre cohérent avec aucun des deux temps affichés."""
     forecast = _fake_forecast(["10:00"], wind_speed_kmh=[0.0], wind_direction_deg=[0.0])
 
-    windows = rank_forecast_windows(forecast, _CHUNK, _CP_FIT, _MASS_KG, _CDA_M2, _CRR)
+    windows = rank_forecast_windows(forecast, _CHUNKS, _CP_FIT, _MASS_KG, _CDA_M2, _CRR)
 
     expected_power_w = _CP_FIT.cp_watts + _CP_FIT.w_prime_joules / windows[0].predicted_time_s
     assert windows[0].required_power_w == pytest.approx(expected_power_w)
@@ -86,7 +116,7 @@ def test_rank_forecast_windows_returns_empty_when_all_slots_outside_range() -> N
         ["02:00", "23:00"], wind_speed_kmh=[0.0, 0.0], wind_direction_deg=[0.0, 0.0]
     )
 
-    windows = rank_forecast_windows(forecast, _CHUNK, _CP_FIT, _MASS_KG, _CDA_M2, _CRR)
+    windows = rank_forecast_windows(forecast, _CHUNKS, _CP_FIT, _MASS_KG, _CDA_M2, _CRR)
 
     assert windows == []
 
@@ -108,7 +138,7 @@ def test_rank_forecast_windows_skips_slots_with_no_feasible_speed() -> None:
         wind_direction_deg=[180.0, 0.0],
     )
 
-    windows = rank_forecast_windows(forecast, _CHUNK, _CP_FIT, _MASS_KG, _CDA_M2, _CRR)
+    windows = rank_forecast_windows(forecast, _CHUNKS, _CP_FIT, _MASS_KG, _CDA_M2, _CRR)
 
     assert len(windows) == 1
     assert windows[0].time.hour == 11

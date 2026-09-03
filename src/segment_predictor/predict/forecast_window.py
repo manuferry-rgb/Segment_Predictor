@@ -24,8 +24,13 @@ import duckdb
 import httpx
 
 from segment_predictor.ingest.open_meteo import get_forecast_weather
+from segment_predictor.models.polyline import decode_polyline
 from segment_predictor.models.power import CriticalPowerFit, sustainable_power_w
-from segment_predictor.models.segment import SegmentChunk, simulate_segment_time
+from segment_predictor.models.segment import (
+    SegmentChunk,
+    segment_chunks_from_polyline,
+    simulate_segment_time,
+)
 
 DEFAULT_FORECAST_DAYS = 10
 # Plage horaire raisonnable pour une sortie vélo — évite de classer un
@@ -66,7 +71,7 @@ def _extract_hourly_slot(hourly: dict, index: int) -> tuple[datetime, float, flo
 
 def rank_forecast_windows(
     forecast: dict,
-    chunk: SegmentChunk,
+    chunks: list[SegmentChunk],
     cp_fit: CriticalPowerFit,
     mass_kg: float,
     cda_m2: float,
@@ -77,6 +82,11 @@ def rank_forecast_windows(
     """`forecast` : JSON brut d'Open-Meteo (`get_forecast_weather`, T-27),
     `timezone=auto` donc `hourly.time` est déjà en heure locale. Classé
     par temps prédit croissant (le meilleur créneau en premier).
+
+    `chunks` : un cap par tronçon (T-32, `segment_chunks_from_polyline`)
+    plutôt qu'un unique `SegmentChunk` — c'est ce qui permet au vent
+    d'être face sur une partie du segment et de dos sur une autre, au
+    lieu d'un seul vent appliqué à toute la distance.
 
     Un créneau dont la vitesse n'a pas de solution (`simulate_segment_
     time`, T-13 — ex. vent de face extrême) est écarté plutôt que de
@@ -93,7 +103,7 @@ def rank_forecast_windows(
 
         try:
             predicted_time_s = simulate_segment_time(
-                [chunk],
+                chunks,
                 cp_fit.cp_watts,
                 cp_fit.w_prime_joules,
                 mass_kg,
@@ -137,29 +147,31 @@ def rank_forecast_windows_for_segment(
     """Récupère la prévision pour la position du segment (`start_lat`/
     `start_lng`, T-27) et classe les créneaux horaires.
 
-    Même approximation qu'ailleurs (T-16/T-17/T-20) : le segment est
-    traité comme UN SEUL tronçon à pente et cap MOYENS
-    (`main.segments.average_grade`/`heading_rad`), pas son profil réel
-    tronçon par tronçon — pas extrait au niveau segment (T-07b).
+    Cap RÉEL par tronçon depuis le polyline du segment (T-32,
+    `segment_chunks_from_polyline`) — remplace l'ancienne approximation
+    "un seul tronçon à cap moyen start->end" (T-16/T-17/T-20), qui
+    n'avait pas de sens pour un segment qui tourne ou boucle. La pente
+    reste en revanche `average_grade` appliquée à chaque tronçon : aucune
+    source d'altitude par tronçon n'est disponible depuis le polyline
+    (lat/lng seulement) — limite assumée, pas cachée (voir ROADMAP.md
+    T-32 et segment_chunks_from_polyline).
 
     `cda_m2`/`crr`/`cp_fit` : déjà calibrés par l'appelant (T-16/T-17),
     pas recalculés ici — ce module ne connaît pas le chemin du CSV
     d'annotations (T-16), qui reste une responsabilité du script.
     """
     row = conn.execute(
-        "SELECT distance_m, average_grade, heading_rad, start_lat, start_lng "
-        "FROM segments WHERE id = ?",
+        "SELECT average_grade, polyline, start_lat, start_lng FROM segments WHERE id = ?",
         [segment_id],
     ).fetchone()
     if row is None:
         raise ValueError(f"segment {segment_id} introuvable dans main.segments")
-    distance_m, average_grade, heading_rad, start_lat, start_lng = row
+    average_grade, polyline, start_lat, start_lng = row
 
-    chunk = SegmentChunk(
-        start_distance_m=0.0, length_m=distance_m, grade=average_grade, heading_rad=heading_rad
-    )
+    points = decode_polyline(polyline)
+    chunks = segment_chunks_from_polyline(points, average_grade)
     forecast = get_forecast_weather(http_client, start_lat, start_lng, forecast_days)
 
     return rank_forecast_windows(
-        forecast, chunk, cp_fit, mass_kg, cda_m2, crr, min_hour=min_hour, max_hour=max_hour
+        forecast, chunks, cp_fit, mass_kg, cda_m2, crr, min_hour=min_hour, max_hour=max_hour
     )
