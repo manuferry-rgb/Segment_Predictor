@@ -59,7 +59,15 @@ if st.button("Scanner mes segments", type="primary"):
     with st.spinner("Récupération de la météo du jour pour chaque segment favori..."):
         with httpx.Client(timeout=30.0) as client:
             opportunities = scan_segments_for_today(conn=conn, http_client=client)
+    # Persisté (T-35) : le clic sur une ligne du tableau plus bas déclenche
+    # lui aussi un rerun de tout le script (comportement Streamlit), pendant
+    # lequel `st.button` redevient False — sans ce stockage, le tableau
+    # disparaîtrait avant même d'avoir pu lire la ligne cliquée.
+    st.session_state["wind_opportunities"] = opportunities
 
+opportunities = st.session_state.get("wind_opportunities")
+
+if opportunities is not None:
     if not opportunities:
         st.warning(
             "Aucun créneau exploitable aujourd'hui (6h-21h, heures déjà passées "
@@ -75,6 +83,7 @@ if st.button("Scanner mes segments", type="primary"):
         f"**{n_good}** segment(s) sur **{len(opportunities)}** avec un vent favorable "
         "en moyenne aujourd'hui."
     )
+    st.caption("Clique sur une ligne pour ouvrir ce segment dans Kompass.")
 
     # Déjà trié par average_tailwind_speed_ms décroissante
     # (scan_segments_for_today) : les segments "à tenter" sont donc
@@ -94,4 +103,21 @@ if st.button("Scanner mes segments", type="primary"):
             for o in opportunities
         ]
     )
-    st.dataframe(table, hide_index=True, height=600)
+    # on_select="rerun" + selection_mode="single-row" (T-35) : Streamlit
+    # renvoie l'index de ligne cliquée dans `event.selection.rows`, pas
+    # besoin de composant tiers pour un tableau cliquable.
+    event = st.dataframe(
+        table,
+        hide_index=True,
+        height=600,
+        on_select="rerun",
+        selection_mode="single-row",
+    )
+
+    selected_rows = event.selection.rows
+    if selected_rows:
+        # Consommé côté app.py (st.session_state.pop) : ce n'est pas un
+        # filtre permanent, juste la valeur de départ du prochain
+        # affichage du selectbox "Segment".
+        st.session_state["selected_segment_id"] = opportunities[selected_rows[0]].segment_id
+        st.switch_page("app.py")

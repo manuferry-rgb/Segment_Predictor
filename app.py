@@ -225,7 +225,23 @@ if not segments:
     st.stop()
 
 segment_options = {f"{name} ({segment_id})": segment_id for segment_id, name in segments}
-segment_label = st.selectbox("Segment", options=list(segment_options.keys()))
+
+# Pré-sélection venant de "Segments du jour" (clic sur une ligne du
+# tableau, T-35) : posée dans st.session_state AVANT la création du
+# widget, pas via `index=` sur st.selectbox — un `index` n'est pris en
+# compte qu'à la création du widget, un changement manuel de segment
+# ensuite serait écrasé à chaque re-exécution du script si on le
+# recalculait à chaque fois. `.pop` : valeur consommée une fois, pas un
+# filtre permanent qui rejouerait la même sélection à chaque interaction
+# sur cette page (ex. changement de scénario de draft plus bas).
+preselected_segment_id = st.session_state.pop("selected_segment_id", None)
+if preselected_segment_id is not None:
+    for label, sid in segment_options.items():
+        if sid == preselected_segment_id:
+            st.session_state["segment_select"] = label
+            break
+
+segment_label = st.selectbox("Segment", options=list(segment_options.keys()), key="segment_select")
 segment_id = segment_options[segment_label]
 
 # Longueur et dénivelé du segment choisi (T-31) : affiché dès la
