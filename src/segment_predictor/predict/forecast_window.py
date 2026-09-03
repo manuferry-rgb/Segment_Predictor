@@ -55,12 +55,15 @@ class ForecastWindow:
     temperature_k: float
 
 
-def _extract_hourly_slot(hourly: dict, index: int) -> tuple[datetime, float, float, float]:
+def extract_hourly_slot(hourly: dict, index: int) -> tuple[datetime, float, float, float]:
     """(heure locale, température K, vitesse vent m/s, direction vent rad)
     pour l'indice `index` — mêmes conversions SI que storage/weather.py
     (km/h -> m/s, °C -> K), un point par heure, sans interpolation :
     chaque créneau EST déjà une heure précise, contrairement à l'heure
     exacte d'une activité qui tombe généralement entre deux relevés.
+
+    Publique (T-33) : même format de réponse Open-Meteo réutilisé par
+    predict/wind_scan.py, pas de raison de reparser `hourly.*` deux fois.
     """
     time = datetime.fromisoformat(hourly["time"][index])
     temperature_k = hourly["temperature_2m"][index] + 273.15
@@ -97,7 +100,7 @@ def rank_forecast_windows(
 
     windows = []
     for i in range(len(hourly["time"])):
-        time, temperature_k, wind_speed_ms, wind_direction_rad = _extract_hourly_slot(hourly, i)
+        time, temperature_k, wind_speed_ms, wind_direction_rad = extract_hourly_slot(hourly, i)
         if not (min_hour <= time.hour <= max_hour):
             continue
 

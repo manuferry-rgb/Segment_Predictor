@@ -234,6 +234,37 @@ def segment_chunks_from_polyline(
     return chunks
 
 
+def tailwind_fraction(
+    chunks: list[SegmentChunk], wind_speed_ms: float, wind_direction_rad: float
+) -> float:
+    """Fraction de la DISTANCE totale (pas du nombre de tronçons) où le
+    vent est dans le dos, tronçon par tronçon — filtre géométrique rapide
+    "quels segments tenter aujourd'hui" (T-33), indépendant de toute
+    calibration (CP, CdA, Crr) : seulement le tracé (T-32) contre un
+    vent, pas une prédiction de temps.
+
+    Pondérée par `length_m` : un segment avec 90% de sa distance en 2
+    longs tronçons de dos et 10% en 50 petits tronçons de face doit
+    compter ~90%, pas ~4% (un simple compte de tronçons favorables
+    donnerait ce résultat faux — voir test_tailwind_fraction_is_
+    weighted_by_chunk_length_not_chunk_count).
+
+    Un tronçon avec un headwind effectif de 0.0 (vent de travers pur)
+    n'est PAS compté favorable (`< 0` strict, pas `<= 0`) : un vent de
+    travers n'aide pas, ce n'est pas un cadeau à comptabiliser.
+    """
+    if not chunks:
+        raise ValueError("chunks vide : rien à évaluer")
+
+    total_length_m = sum(chunk.length_m for chunk in chunks)
+    tailwind_length_m = sum(
+        chunk.length_m
+        for chunk in chunks
+        if effective_headwind_speed_ms(wind_speed_ms, wind_direction_rad, chunk.heading_rad) < 0
+    )
+    return tailwind_length_m / total_length_m
+
+
 def _simulate_at_constant_power(
     chunks: list[SegmentChunk],
     power_w: float,

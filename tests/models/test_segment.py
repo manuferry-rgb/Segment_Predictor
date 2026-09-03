@@ -21,6 +21,7 @@ from segment_predictor.models.segment import (
     segment_chunks_from_polyline,
     simulate_segment_time,
     smooth_altitude,
+    tailwind_fraction,
 )
 
 METERS_PER_DEGREE = 111_320.0  # approximation usuelle à l'équateur
@@ -271,6 +272,59 @@ def test_segment_chunks_from_polyline_matches_real_strava_segment() -> None:
 
     headings_deg = [math.degrees(c.heading_rad) for c in chunks]
     assert max(headings_deg) - min(headings_deg) > 180  # loin d'un cap unique
+
+
+# ---- tailwind_fraction (T-33) -----------------------------------------------------------
+
+
+def test_tailwind_fraction_is_one_when_every_chunk_has_a_tailwind() -> None:
+    # cap plein sud partout, vent qui vient du nord (0°) : de dos sur tout le trajet.
+    chunks = [
+        SegmentChunk(0.0, 100.0, 0.0, heading_rad=math.pi),
+        SegmentChunk(100.0, 300.0, 0.0, heading_rad=math.pi),
+    ]
+    assert tailwind_fraction(chunks, wind_speed_ms=5.0, wind_direction_rad=0.0) == pytest.approx(
+        1.0
+    )
+
+
+def test_tailwind_fraction_is_zero_when_every_chunk_has_a_headwind() -> None:
+    # cap plein nord partout, vent qui vient du nord : de face sur tout le trajet.
+    chunks = [
+        SegmentChunk(0.0, 100.0, 0.0, heading_rad=0.0),
+        SegmentChunk(100.0, 300.0, 0.0, heading_rad=0.0),
+    ]
+    assert tailwind_fraction(chunks, wind_speed_ms=5.0, wind_direction_rad=0.0) == pytest.approx(
+        0.0
+    )
+
+
+def test_tailwind_fraction_is_weighted_by_chunk_length_not_chunk_count() -> None:
+    """900m de dos (cap sud) + 100m de face (cap nord), vent du nord :
+    90% de la DISTANCE est favorable, même si ce n'est qu'1 tronçon sur
+    2 — un simple compte de tronçons donnerait 50%, faux."""
+    chunks = [
+        SegmentChunk(0.0, 900.0, 0.0, heading_rad=math.pi),  # dos, long
+        SegmentChunk(900.0, 100.0, 0.0, heading_rad=0.0),  # face, court
+    ]
+    assert tailwind_fraction(chunks, wind_speed_ms=5.0, wind_direction_rad=0.0) == pytest.approx(
+        0.9
+    )
+
+
+def test_tailwind_fraction_is_zero_with_no_wind() -> None:
+    """Vent nul : aucun tronçon n'a un headwind effectif STRICTEMENT
+    négatif (0.0 n'est pas < 0), donc aucun n'est compté favorable —
+    un vent nul n'est pas un cadeau, il ne doit rien "gagner"."""
+    chunks = [SegmentChunk(0.0, 100.0, 0.0, heading_rad=math.pi)]
+    assert tailwind_fraction(chunks, wind_speed_ms=0.0, wind_direction_rad=0.0) == pytest.approx(
+        0.0
+    )
+
+
+def test_tailwind_fraction_raises_on_empty_chunks() -> None:
+    with pytest.raises(ValueError, match="chunks vide"):
+        tailwind_fraction([], wind_speed_ms=5.0, wind_direction_rad=0.0)
 
 
 # ---- simulate_segment_time (T-13) --------------------------------------------------------
