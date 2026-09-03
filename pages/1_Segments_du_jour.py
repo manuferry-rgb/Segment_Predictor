@@ -27,10 +27,6 @@ from segment_predictor.predict.wind_scan import scan_segments_for_today
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DUCKDB_PATH = PROJECT_ROOT / "data" / "segment_predictor.duckdb"
 
-# "3/4" du segment dans le bon sens, demandé explicitement (T-33) : seuil
-# à partir duquel un segment est mis en avant dans le tableau.
-GOOD_TAILWIND_FRACTION_THRESHOLD = 0.75
-
 # Même convention que app.py/physics.py : direction D'OÙ VIENT le vent.
 _COMPASS_LABELS = ("N", "NE", "E", "SE", "S", "SO", "O", "NO")
 
@@ -71,23 +67,25 @@ if st.button("Scanner mes segments", type="primary"):
         )
         st.stop()
 
-    n_good = sum(
-        1 for o in opportunities if o.tailwind_fraction >= GOOD_TAILWIND_FRACTION_THRESHOLD
-    )
+    # "Favorable" = vent de dos EN MOYENNE sur le segment (positif) —
+    # seuil naturel, pas un pourcentage arbitraire de distance (T-34) :
+    # un segment tout juste positif aide un peu, un négatif freine.
+    n_good = sum(1 for o in opportunities if o.average_tailwind_speed_ms > 0)
     st.write(
-        f"**{n_good}** segment(s) sur **{len(opportunities)}** avec au moins "
-        f"{GOOD_TAILWIND_FRACTION_THRESHOLD:.0%} de la distance dans le bon sens "
-        "aujourd'hui."
+        f"**{n_good}** segment(s) sur **{len(opportunities)}** avec un vent favorable "
+        "en moyenne aujourd'hui."
     )
 
-    # Déjà trié par tailwind_fraction décroissante (scan_segments_for_today) :
-    # les segments "à tenter" sont donc naturellement en haut du tableau,
-    # sans logique de tri supplémentaire ici.
+    # Déjà trié par average_tailwind_speed_ms décroissante
+    # (scan_segments_for_today) : les segments "à tenter" sont donc
+    # naturellement en haut du tableau, sans logique de tri ici.
     table = pd.DataFrame(
         [
             {
                 "Segment": o.segment_name,
-                "Vent favorable (%)": round(o.tailwind_fraction * 100),
+                # Signe explicite (+/-) : positif = aide, négatif = freine —
+                # une vraie vitesse (km/h), pas une fraction abstraite.
+                "Vent favorable": f"{o.average_tailwind_speed_ms * 3.6:+.0f} km/h",
                 "Meilleure heure": o.best_hour.strftime("%Hh%M"),
                 "Vent": round(o.wind_speed_ms * 3.6),
                 "Direction": _compass_label(o.wind_direction_rad),
@@ -96,13 +94,4 @@ if st.button("Scanner mes segments", type="primary"):
             for o in opportunities
         ]
     )
-    st.dataframe(
-        table,
-        hide_index=True,
-        height=600,
-        column_config={
-            "Vent favorable (%)": st.column_config.ProgressColumn(
-                "Vent favorable (%)", min_value=0, max_value=100, format="%d%%"
-            ),
-        },
-    )
+    st.dataframe(table, hide_index=True, height=600)

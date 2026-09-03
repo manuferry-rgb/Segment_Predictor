@@ -1,4 +1,4 @@
-"""Tests du balayage "quels segments tenter aujourd'hui" (T-33).
+"""Tests du balayage "quels segments tenter aujourd'hui" (T-33/T-34).
 
 Seule `best_wind_opportunity_today` est testée ici (pure : forecast dict
 en entrée, pas d'I/O) — `scan_segments_for_today` combine DB et réseau,
@@ -8,11 +8,16 @@ contre la vraie base plutôt qu'en test unitaire (même convention).
 
 from datetime import date, datetime
 
+import pytest
+
 from segment_predictor.models.segment import SegmentChunk
 from segment_predictor.predict.wind_scan import best_wind_opportunity_today
 
 _CHUNKS = [SegmentChunk(0.0, 2000.0, 0.0, heading_rad=0.0)]  # plein nord
 _TODAY = date(2026, 9, 10)
+# 20 km/h converti en m/s (même conversion que extract_hourly_slot),
+# pour que les vitesses attendues ci-dessous restent lisibles.
+_20KMH_IN_MS = 20.0 / 3.6
 
 
 def _fake_forecast(
@@ -44,7 +49,7 @@ def test_best_wind_opportunity_today_picks_the_most_favorable_hour() -> None:
 
     assert result is not None
     assert result.best_hour.hour == 14
-    assert result.tailwind_fraction == 1.0
+    assert result.average_tailwind_speed_ms == pytest.approx(_20KMH_IN_MS)
     assert result.segment_id == 1
     assert result.segment_name == "Test"
     assert result.distance_m == 2000.0
@@ -66,7 +71,8 @@ def test_best_wind_opportunity_today_ignores_hours_on_another_date() -> None:
 
     assert result is not None
     assert result.best_hour.date() == _TODAY
-    assert result.tailwind_fraction == 0.0  # seule l'heure du 10 (face) était éligible
+    # seule l'heure du 10 (face) était éligible : vitesse défavorable, négative.
+    assert result.average_tailwind_speed_ms == pytest.approx(-_20KMH_IN_MS)
 
 
 def test_best_wind_opportunity_today_excludes_past_hours() -> None:
@@ -83,7 +89,7 @@ def test_best_wind_opportunity_today_excludes_past_hours() -> None:
 
     assert result is not None
     assert result.best_hour.hour == 16
-    assert result.tailwind_fraction == 0.0
+    assert result.average_tailwind_speed_ms == pytest.approx(-_20KMH_IN_MS)
 
 
 def test_best_wind_opportunity_today_filters_to_hour_range() -> None:
@@ -100,7 +106,7 @@ def test_best_wind_opportunity_today_filters_to_hour_range() -> None:
 
     assert result is not None
     assert result.best_hour.hour == 12
-    assert result.tailwind_fraction == 0.0
+    assert result.average_tailwind_speed_ms == pytest.approx(-_20KMH_IN_MS)
 
 
 def test_best_wind_opportunity_today_returns_none_when_no_eligible_hour() -> None:

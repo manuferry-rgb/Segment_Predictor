@@ -1,10 +1,10 @@
-"""Balayage de tous les segments favoris contre le vent du jour (T-33).
+"""Balayage de tous les segments favoris contre le vent du jour (T-33/T-34).
 
 Question différente de forecast_window.py (T-27) : pas "quelle est la
 meilleure fenêtre POUR CE segment sur 10 jours", mais "PARMI TOUS mes
 segments, lesquels ont le vent dans le bon sens AUJOURD'HUI" — un filtre
-d'opportunité géométrique (`tailwind_fraction`, T-32/T-33), pas une
-prédiction de temps. Ne dépend d'AUCUNE calibration (CP, CdA, Crr) :
+d'opportunité géométrique (`average_tailwind_speed_ms`, T-32/T-34), pas
+une prédiction de temps. Ne dépend d'AUCUNE calibration (CP, CdA, Crr) :
 seulement le tracé du segment (T-32) contre la prévision du jour, donc
 utilisable même sans forme du jour connue.
 
@@ -22,8 +22,8 @@ from segment_predictor.ingest.open_meteo import get_forecast_weather
 from segment_predictor.models.polyline import decode_polyline
 from segment_predictor.models.segment import (
     SegmentChunk,
+    average_tailwind_speed_ms,
     segment_chunks_from_polyline,
-    tailwind_fraction,
 )
 from segment_predictor.predict.forecast_window import extract_hourly_slot
 
@@ -39,7 +39,9 @@ class SegmentWindOpportunity:
     segment_name: str
     distance_m: float
     best_hour: datetime
-    tailwind_fraction: float
+    # m/s, positif = vent de dos en moyenne sur le segment, négatif =
+    # vent de face en moyenne (voir average_tailwind_speed_ms, T-34).
+    average_tailwind_speed_ms: float
     wind_speed_ms: float
     wind_direction_rad: float
 
@@ -57,8 +59,8 @@ def best_wind_opportunity_today(
 ) -> SegmentWindOpportunity | None:
     """Meilleure heure d'AUJOURD'HUI (pas les 10 jours de
     rank_forecast_windows, T-27) pour CE segment, au sens du vent le
-    plus favorable — `None` si aucune heure restante aujourd'hui ne
-    tombe dans `[min_hour, max_hour]`.
+    plus favorable EN MOYENNE (`average_tailwind_speed_ms`) — `None` si
+    aucune heure restante aujourd'hui ne tombe dans `[min_hour, max_hour]`.
 
     `today`/`now` injectés (pas `datetime.now()` en dur) : mêmes heures
     en entrée -> même résultat en sortie, testable sans dépendre de
@@ -74,14 +76,14 @@ def best_wind_opportunity_today(
         if time.date() != today or time < now or not (min_hour <= time.hour <= max_hour):
             continue
 
-        fraction = tailwind_fraction(chunks, wind_speed_ms, wind_direction_rad)
-        if best is None or fraction > best.tailwind_fraction:
+        tailwind_ms = average_tailwind_speed_ms(chunks, wind_speed_ms, wind_direction_rad)
+        if best is None or tailwind_ms > best.average_tailwind_speed_ms:
             best = SegmentWindOpportunity(
                 segment_id=segment_id,
                 segment_name=segment_name,
                 distance_m=distance_m,
                 best_hour=time,
-                tailwind_fraction=fraction,
+                average_tailwind_speed_ms=tailwind_ms,
                 wind_speed_ms=wind_speed_ms,
                 wind_direction_rad=wind_direction_rad,
             )
@@ -97,7 +99,9 @@ def scan_segments_for_today(
     now: datetime | None = None,
 ) -> list[SegmentWindOpportunity]:
     """Un appel météo (`forecast_days=1`) par segment favori, classé par
-    `tailwind_fraction` décroissante (le plus favorable en premier).
+    `average_tailwind_speed_ms` décroissante (le plus favorable en
+    premier — voir sa docstring pour pourquoi une vitesse réelle plutôt
+    qu'une fraction de distance).
 
     Un segment dont le polyline dégénère en 0 tronçon exploitable
     (`segment_chunks_from_polyline`, ex. tous les points confondus) est
@@ -131,5 +135,5 @@ def scan_segments_for_today(
         if opportunity is not None:
             opportunities.append(opportunity)
 
-    opportunities.sort(key=lambda o: o.tailwind_fraction, reverse=True)
+    opportunities.sort(key=lambda o: o.average_tailwind_speed_ms, reverse=True)
     return opportunities
