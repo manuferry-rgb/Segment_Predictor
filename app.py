@@ -19,7 +19,7 @@ import pandas as pd
 import streamlit as st
 
 from segment_predictor.calibrate.cda_crr import calibrate_cda_crr_from_db
-from segment_predictor.calibrate.draft_tagging import fit_current_cp
+from segment_predictor.calibrate.draft_tagging import fit_current_cp, load_existing_annotations
 from segment_predictor.calibrate.form import recent_performance_index_values
 from segment_predictor.models.draft import draft_ratio_for_preset
 from segment_predictor.models.pacing import optimize_pacing
@@ -142,6 +142,22 @@ segment_options = {f"{name} ({segment_id})": segment_id for segment_id, name in 
 segment_label = st.selectbox("Segment", options=list(segment_options.keys()))
 segment_id = segment_options[segment_label]
 
+# Longueur et dénivelé du segment choisi (T-31) : affiché dès la
+# sélection, indépendamment du bouton de recherche plus bas — pour juger
+# le profil avant même de lancer un calcul. Pas de D- : Strava ne le
+# fournit pas au niveau segment (seulement D+, `total_elevation_gain`) ;
+# `elevation_high`/`elevation_low` ne suffiraient pas à le reconstruire
+# sans supposer un profil qui monte et descend une seule fois, une
+# donnée inventée pour une boucle ou un profil accidenté.
+segment_distance_m, segment_elevation_gain_m = conn.execute(
+    "SELECT distance_m, total_elevation_gain_m FROM segments WHERE id = ?",
+    [segment_id],
+).fetchone()
+st.caption(
+    f"{segment_distance_m / 1000:.1f} km · D+ {segment_elevation_gain_m:.0f} m · "
+    "D- non disponible (pas fourni par Strava au niveau segment)"
+)
+
 draft_preset = st.selectbox(
     "Scénario de draft", options=ALL_DRAFT_PRESETS, format_func=lambda p: _PRESET_LABELS[p]
 )
@@ -194,6 +210,23 @@ if st.button("Chercher la meilleure fenêtre", type="primary"):
     )
     col3.metric("Température", f"{best.temperature_k - 273.15:.0f}°C")
 
+    # Stratégie de pacing (T-26) — placée ici, avant le classement détaillé
+    # des créneaux, pour rester juste sous la meilleure fenêtre plutôt
+    # qu'en bas de page.
+    st.subheader("Stratégie de pacing")
+    st.caption(
+        "⚠️ Un seul tronçon par segment — aucun profil pente/distance détaillé n'est "
+        "stocké au niveau segment (T-07b jamais fait). La puissance recommandée est "
+        "donc constante sur tout le segment : pas une vraie stratégie variable, juste "
+        "la puissance soutenable optimale pour ce profil simplifié. Calculée SANS vent "
+        "(contrairement à la puissance requise ci-dessus, propre à la meilleure fenêtre) "
+        "— les deux chiffres ne sont pas censés coïncider."
+    )
+    pacing_result = optimize_pacing(
+        [chunk], cp_fit.cp_watts, cp_fit.w_prime_joules, mass_kg, effective_cda_m2, cda_crr_fit.crr
+    )
+    st.metric("Puissance recommandée", f"{pacing_result.power_profile_w[0]:.0f} W")
+
     # Écart à combler (T-31) : référence = temps prédit sur la meilleure
     # fenêtre, comparé au KOM du segment et à mon propre PR.
     kom_col, pr_col = st.columns(2)
@@ -216,13 +249,15 @@ if st.button("Chercher la meilleure fenêtre", type="primary"):
         # `segments.pr_seconds` ne porte pas l'id de l'effort correspondant,
         # donc pas de jointure directe.
         pr_effort_row = conn.execute(
-            "SELECT average_watts, device_watts, start_date, activity_id "
+            "SELECT id, average_watts, device_watts, start_date, activity_id "
             "FROM segment_efforts WHERE segment_id = ? AND elapsed_time_s = ? "
             "ORDER BY start_date DESC LIMIT 1",
             [segment_id, pr_seconds],
         ).fetchone()
         if pr_effort_row is not None:
-            pr_average_watts, device_watts, pr_start_date, pr_activity_id = pr_effort_row
+            pr_effort_id, pr_average_watts, device_watts, pr_start_date, pr_activity_id = (
+                pr_effort_row
+            )
             strava_url = f"https://www.strava.com/activities/{pr_activity_id}"
             pr_col.caption(f"Réalisé le {pr_start_date:%d/%m/%Y} · [Voir sur Strava]({strava_url})")
             # `average_watts` peut être NULL (pas de capteur ce jour-là,
@@ -232,6 +267,18 @@ if st.button("Chercher la meilleure fenêtre", type="primary"):
                 pr_col.caption(f"Puissance moyenne : {pr_average_watts:.0f} W{sensor_note}")
             else:
                 pr_col.caption("Puissance moyenne : non disponible")
+            # Statut de draft de CET effort (T-31) : la comparaison plus
+            # haut (temps prédit vs PR) suppose implicitement un PR solo,
+            # comme la prédiction elle-même — mais rien ne le garantit tant
+            # que l'effort n'a pas été trié dans le CSV (T-16). Un PR
+            # obtenu dans une roue serait plus rapide qu'un effort solo à
+            # puissance égale : le signaler plutôt que le supposer.
+            draft_status = load_existing_annotations(CSV_PATH).get(pr_effort_id, "unknown")
+            if draft_status != "solo":
+                pr_col.caption(
+                    f"⚠️ Statut draft de cet effort : {draft_status} — pas confirmé solo, "
+                    "la comparaison ci-dessus peut être biaisée."
+                )
         else:
             pr_col.caption("Puissance moyenne : non disponible")
     else:
@@ -281,18 +328,3 @@ if st.button("Chercher la meilleure fenêtre", type="primary"):
         ]
     )
     st.dataframe(table, hide_index=True, height=300)
-
-    # Stratégie de pacing (T-26)
-    st.subheader("Stratégie de pacing")
-    st.caption(
-        "⚠️ Un seul tronçon par segment — aucun profil pente/distance détaillé n'est "
-        "stocké au niveau segment (T-07b jamais fait). La puissance recommandée est "
-        "donc constante sur tout le segment : pas une vraie stratégie variable, juste "
-        "la puissance soutenable optimale pour ce profil simplifié. Calculée SANS vent "
-        "(contrairement à la puissance requise ci-dessus, propre à la meilleure fenêtre) "
-        "— les deux chiffres ne sont pas censés coïncider."
-    )
-    pacing_result = optimize_pacing(
-        [chunk], cp_fit.cp_watts, cp_fit.w_prime_joules, mass_kg, effective_cda_m2, cda_crr_fit.crr
-    )
-    st.metric("Puissance recommandée", f"{pacing_result.power_profile_w[0]:.0f} W")

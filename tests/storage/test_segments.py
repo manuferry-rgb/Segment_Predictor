@@ -54,6 +54,7 @@ def test_build_segments_table_parses_kom_and_reads_pr(tmp_path) -> None:
             "name": "Alpe d'Huez",
             "distance": 13800.0,
             "average_grade": 8.1,
+            "total_elevation_gain": 1120.0,
             "start_latlng": [45.09, 6.07],
             "end_latlng": [45.09, 6.10],
             "xoms": {"kom": "39:56"},
@@ -68,6 +69,7 @@ def test_build_segments_table_parses_kom_and_reads_pr(tmp_path) -> None:
             "name": "Col de la Colombiere",
             "distance": 7500.0,
             "average_grade": 6.7,
+            "total_elevation_gain": 640.0,
             "start_latlng": [45.97, 6.47],
             "end_latlng": [45.99, 6.50],
             "xoms": {"kom": "1:02:35"},
@@ -89,6 +91,36 @@ def test_build_segments_table_parses_kom_and_reads_pr(tmp_path) -> None:
     ]
 
 
+def test_build_segments_table_reads_total_elevation_gain(tmp_path) -> None:
+    """D+ (T-31) : renvoyé tel quel par Strava (mètres), pas de conversion
+    d'unité contrairement à average_grade. Pas de D- ici : Strava ne le
+    fournit pas au niveau segment (vérifié sur le payload réel), donc rien
+    à stocker — inventer une valeur violerait la règle "pas de données
+    inventées" du projet."""
+    raw_dir = tmp_path / "segments"
+    _write_raw_segment(
+        raw_dir,
+        {
+            "id": 1,
+            "name": "Segment",
+            "distance": 1000.0,
+            "average_grade": 5.0,
+            "total_elevation_gain": 223.6,
+            "start_latlng": [47.5, 7.4],
+            "end_latlng": [47.51, 7.41],
+            "xoms": {"kom": "1:00"},
+            "athlete_segment_stats": {"pr_elapsed_time": 60, "pr_date": "2023-01-01T00:00:00Z"},
+        },
+        "1.parquet",
+    )
+
+    conn = duckdb.connect(":memory:")
+    build_segments_table(conn, raw_dir)
+
+    row = conn.execute("SELECT total_elevation_gain_m FROM segments").fetchone()
+    assert row == pytest.approx((223.6,))
+
+
 def test_build_segments_table_converts_average_grade_from_percent_to_fraction(tmp_path) -> None:
     """Régression T-16 : Strava renvoie average_grade en pourcent (0.2 = 0.2%),
     mais models/physics.py (grade de cyclist_power_required, depuis T-10)
@@ -103,6 +135,7 @@ def test_build_segments_table_converts_average_grade_from_percent_to_fraction(tm
             "name": "Segment",
             "distance": 1000.0,
             "average_grade": 0.2,  # 0.2%, comme renvoyé par Strava
+            "total_elevation_gain": 2.0,
             "start_latlng": [47.5, 7.4],
             "end_latlng": [47.51, 7.41],
             "xoms": {"kom": "1:00"},
@@ -132,6 +165,7 @@ def test_build_segments_table_handles_never_ridden_segment_across_files(tmp_path
             "name": "Jamais roulé",
             "distance": 2000.0,
             "average_grade": 4.0,
+            "total_elevation_gain": 80.0,
             "start_latlng": [47.5, 7.4],
             "end_latlng": [47.51, 7.41],
             "xoms": {"kom": "1:26"},
@@ -150,6 +184,7 @@ def test_build_segments_table_handles_never_ridden_segment_across_files(tmp_path
             "name": "Déjà roulé",
             "distance": 3000.0,
             "average_grade": 3.0,
+            "total_elevation_gain": 60.0,
             "start_latlng": [45.97, 6.47],
             "end_latlng": [45.99, 6.50],
             "xoms": {"kom": "2:00"},
@@ -179,6 +214,7 @@ def test_build_segments_table_reads_effort_count(tmp_path) -> None:
             "name": "Segment",
             "distance": 1000.0,
             "average_grade": 5.0,
+            "total_elevation_gain": 50.0,
             "start_latlng": [47.5, 7.4],
             "end_latlng": [47.51, 7.41],
             "xoms": {"kom": "1:00"},
@@ -231,6 +267,7 @@ def test_build_segments_table_replaces_existing_table(tmp_path) -> None:
             "name": "Segment",
             "distance": 1000.0,
             "average_grade": 5.0,
+            "total_elevation_gain": 50.0,
             "start_latlng": [47.5, 7.4],
             "end_latlng": [47.51, 7.41],
             "xoms": {"kom": "1:00"},
@@ -260,6 +297,7 @@ def test_build_segments_table_computes_heading_from_start_and_end_latlng(tmp_pat
             "name": "Plein est",
             "distance": 1000.0,
             "average_grade": 5.0,
+            "total_elevation_gain": 50.0,
             "start_latlng": [45.0, 6.0],
             "end_latlng": [45.0, 6.1],  # même latitude, longitude croissante : plein est
             "xoms": {"kom": "1:00"},
@@ -287,6 +325,7 @@ def test_build_segments_table_reads_start_lat_lng(tmp_path) -> None:
             "name": "Segment",
             "distance": 1000.0,
             "average_grade": 5.0,
+            "total_elevation_gain": 50.0,
             "start_latlng": [45.123, 6.456],
             "end_latlng": [45.13, 6.46],
             "xoms": {"kom": "1:00"},

@@ -67,6 +67,14 @@ def _segment_to_row(raw_segment: dict) -> dict:
         # (T-16), en branchant enfin cette colonne sur la physique : un
         # 0.2% traité comme 20% donnait un temps prédit ~5x trop long.
         "average_grade": raw_segment["average_grade"] / 100.0,
+        # Dénivelé positif (T-31), en mètres, tel que renvoyé par Strava —
+        # pas de conversion d'unité ici, contrairement à average_grade.
+        # Pas de champ symétrique pour le dénivelé négatif : Strava ne le
+        # fournit pas au niveau segment (vérifié sur un payload réel), et
+        # `elevation_high`/`elevation_low` ne suffisent pas à le
+        # reconstruire (un profil qui monte et descend plusieurs fois n'est
+        # pas déterminé par son seul min/max) — pas de valeur inventée.
+        "total_elevation_gain_m": raw_segment["total_elevation_gain"],
         # Cap GLOBAL du segment (T-27), pas tronçon par tronçon : on n'a
         # que start_latlng/end_latlng ici, pas de profil détaillé au niveau
         # segment (T-07b). Nécessaire pour que le vent (T-15) ait un sens
