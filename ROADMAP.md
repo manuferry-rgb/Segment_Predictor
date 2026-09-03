@@ -221,3 +221,17 @@ l'orientation face au vent.
 *Critère de fin* : sur un segment en boucle ou tortueux, le vent
 prédit n'est plus un seul vent de face/dos appliqué à toute la
 distance, mais varie tronçon par tronçon comme en vrai.
+
+**T-33 — Balayage "segments du jour" par orientation du vent**
+Module indépendant, page Streamlit séparée (`pages/`) : pas "quelle est
+la meilleure fenêtre pour CE segment sur 10 jours" (T-27), mais "parmi
+TOUS mes segments favoris, lesquels ont le vent dans le bon sens
+AUJOURD'HUI". Réutilise le découpage en tronçons de T-32
+(`segment_chunks_from_polyline`) pour calculer, par segment, la
+fraction de la DISTANCE (pas juste un compte de tronçons) où le vent
+est de dos (`tailwind_fraction`) — un filtre géométrique pur, sans
+aucune calibration CP/CdA/Crr. Segments mis en avant dans un tableau
+quand au moins 3/4 de la distance est favorable.
+*Critère de fin* : un tableau de tous les segments favoris, triés par
+fraction de vent favorable décroissante, pour l'heure restante
+d'aujourd'hui.
