@@ -20,7 +20,8 @@ from segment_predictor.calibrate.cda_crr import calibrate_cda_crr_from_db
 from segment_predictor.calibrate.draft_tagging import fit_current_cp
 from segment_predictor.calibrate.form import recent_performance_index_values
 from segment_predictor.models.draft import draft_ratio_for_preset
-from segment_predictor.models.segment import SegmentChunk
+from segment_predictor.models.polyline import decode_polyline
+from segment_predictor.models.segment import segment_chunks_from_polyline
 from segment_predictor.models.uncertainty import propagate_uncertainty
 from segment_predictor.predict.forecast_window import rank_forecast_windows_for_segment
 
@@ -30,7 +31,12 @@ CSV_PATH = PROJECT_ROOT / "annotations" / "draft_status.csv"
 
 # Toi + vélo — ajuste si ton poids ou ton vélo change.
 MASS_KG = 91.0
-N_MONTE_CARLO_SAMPLES = 2000
+# 300, pas 2000 (T-32) : chaque tirage simule TOUS les tronçons du
+# polyline (segment_chunks_from_polyline), pas un seul comme avant —
+# jusqu'à ~340 sur un long segment (HBFH). 2000 tirages à cette taille
+# prend ~20s (mesuré), contre ~3s à 300 ; moyenne et écart-type mesurés
+# quasi identiques entre les deux (< 1s d'écart sur HBFH).
+N_MONTE_CARLO_SAMPLES = 300
 # Hypothèse ASSUMÉE, pas mesurée : le projet n'a pas d'historique
 # prévision-vs-réalisé pour calibrer une vraie erreur de prévision de
 # vent (voir la question posée et tranchée avant de coder, T-28).
@@ -60,13 +66,13 @@ def main() -> None:
     conn = duckdb.connect(str(DUCKDB_PATH), read_only=True)
     try:
         row = conn.execute(
-            "SELECT name, distance_m, average_grade, heading_rad FROM segments WHERE id = ?",
+            "SELECT name, average_grade, polyline FROM segments WHERE id = ?",
             [segment_id],
         ).fetchone()
         if row is None:
             print(f"segment {segment_id} introuvable dans main.segments", file=sys.stderr)
             sys.exit(1)
-        segment_name, distance_m, average_grade, heading_rad = row
+        segment_name, average_grade, polyline = row
 
         cp_fit = fit_current_cp(conn)
         cda_crr_fit = calibrate_cda_crr_from_db(conn, CSV_PATH, mass_kg=MASS_KG, cp_fit=cp_fit)
@@ -93,10 +99,13 @@ def main() -> None:
         sys.exit(1)
 
     best = windows[0]
-    chunk = SegmentChunk(0.0, distance_m, average_grade, heading_rad)
+    # Cap réel par tronçon (T-32), comme rank_forecast_windows_for_segment
+    # ci-dessus — sinon le vent perturbé serait projeté sur un cap moyen
+    # unique, faux pour un segment qui tourne ou boucle (voir HBFH).
+    chunks = segment_chunks_from_polyline(decode_polyline(polyline), average_grade)
 
     result = propagate_uncertainty(
-        [chunk],
+        chunks,
         cp_watts=cp_fit.cp_watts,
         cp_watts_std=cp_fit.cp_watts_std,
         w_prime_joules=cp_fit.w_prime_joules,

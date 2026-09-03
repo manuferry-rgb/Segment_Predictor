@@ -23,7 +23,8 @@ from segment_predictor.calibrate.draft_tagging import fit_current_cp, load_exist
 from segment_predictor.calibrate.form import recent_performance_index_values
 from segment_predictor.models.draft import draft_ratio_for_preset
 from segment_predictor.models.pacing import optimize_pacing
-from segment_predictor.models.segment import SegmentChunk
+from segment_predictor.models.polyline import decode_polyline
+from segment_predictor.models.segment import SegmentChunk, segment_chunks_from_polyline
 from segment_predictor.models.uncertainty import propagate_uncertainty
 from segment_predictor.predict.forecast_window import rank_forecast_windows_for_segment
 from segment_predictor.predict.scenarios import ALL_DRAFT_PRESETS
@@ -33,7 +34,14 @@ DUCKDB_PATH = PROJECT_ROOT / "data" / "segment_predictor.duckdb"
 CSV_PATH = PROJECT_ROOT / "annotations" / "draft_status.csv"
 
 DEFAULT_MASS_KG = 91.0
-N_MONTE_CARLO_SAMPLES = 2000
+# 300, pas 2000 (T-32) : chaque tirage simule TOUS les tronçons du
+# polyline (segment_chunks_from_polyline), pas un seul comme avant —
+# jusqu'à ~340 sur un long segment (HBFH). 2000 tirages à cette taille
+# prend ~20s (mesuré), contre ~3s à 300 ; moyenne et écart-type mesurés
+# quasi identiques entre les deux (< 1s d'écart sur HBFH) — le vent
+# perturbé reste un tirage Normal simple, pas besoin de 2000 points pour
+# le résumer par une moyenne et un écart-type stables.
+N_MONTE_CARLO_SAMPLES = 300
 # Hypothèse ASSUMÉE, pas mesurée (T-28) : pas d'historique
 # prévision-vs-réalisé disponible pour la calibrer.
 WIND_RELATIVE_STD = 0.20
@@ -186,12 +194,19 @@ if st.button("Chercher la meilleure fenêtre", type="primary"):
         st.warning("Aucun créneau exploitable sur les 10 prochains jours (6h-21h).")
         st.stop()
 
-    distance_m, average_grade, heading_rad, kom_seconds, pr_seconds = conn.execute(
-        "SELECT distance_m, average_grade, heading_rad, kom_seconds, pr_seconds "
+    distance_m, average_grade, heading_rad, polyline, kom_seconds, pr_seconds = conn.execute(
+        "SELECT distance_m, average_grade, heading_rad, polyline, kom_seconds, pr_seconds "
         "FROM segments WHERE id = ?",
         [segment_id],
     ).fetchone()
+    # Un seul tronçon (pacing, T-26) : le vent n'y entre pas du tout
+    # (optimize_pacing simule à vent nul), donc un cap unique ne change
+    # rien à son résultat — pas la peine d'y payer le coût des ~340
+    # tronçons du polyline pour zéro différence.
     chunk = SegmentChunk(0.0, distance_m, average_grade, heading_rad)
+    # Tronçons multiples, cap réel chacun (incertitude, T-28/T-32) : là le
+    # vent compte, un cap moyen unique le fausse (voir HBFH, T-32).
+    chunks = segment_chunks_from_polyline(decode_polyline(polyline), average_grade)
 
     best = windows[0]
     st.subheader(f"Meilleure fenêtre : {_format_day_hour(best.time)}")
@@ -287,21 +302,25 @@ if st.button("Chercher la meilleure fenêtre", type="primary"):
     # Incertitude (T-28)
     performance_index_samples = recent_performance_index_values(conn, cp_fit=cp_fit)
     if performance_index_samples:
-        result = propagate_uncertainty(
-            [chunk],
-            cp_watts=cp_fit.cp_watts,
-            cp_watts_std=cp_fit.cp_watts_std,
-            w_prime_joules=cp_fit.w_prime_joules,
-            w_prime_joules_std=cp_fit.w_prime_joules_std,
-            mass_kg=mass_kg,
-            cda_m2=effective_cda_m2,
-            crr=cda_crr_fit.crr,
-            performance_index_samples=performance_index_samples,
-            wind_speed_ms=best.wind_speed_ms,
-            wind_direction_rad=best.wind_direction_rad,
-            wind_relative_std=WIND_RELATIVE_STD,
-            n_samples=N_MONTE_CARLO_SAMPLES,
-        )
+        # Peut prendre quelques secondes sur un long segment (T-32 : un
+        # tirage = une simulation de TOUS ses tronçons, pas un seul) —
+        # un spinner plutôt qu'un gel silencieux de l'UI.
+        with st.spinner("Propagation de l'incertitude..."):
+            result = propagate_uncertainty(
+                chunks,
+                cp_watts=cp_fit.cp_watts,
+                cp_watts_std=cp_fit.cp_watts_std,
+                w_prime_joules=cp_fit.w_prime_joules,
+                w_prime_joules_std=cp_fit.w_prime_joules_std,
+                mass_kg=mass_kg,
+                cda_m2=effective_cda_m2,
+                crr=cda_crr_fit.crr,
+                performance_index_samples=performance_index_samples,
+                wind_speed_ms=best.wind_speed_ms,
+                wind_direction_rad=best.wind_direction_rad,
+                wind_relative_std=WIND_RELATIVE_STD,
+                n_samples=N_MONTE_CARLO_SAMPLES,
+            )
         st.write(
             f"Avec incertitude (CP, forme sur {len(performance_index_samples)} jours "
             f"récents, vent) : **{_format_mmss(result.mean_time_s)} ± {result.std_time_s:.0f}s**"
