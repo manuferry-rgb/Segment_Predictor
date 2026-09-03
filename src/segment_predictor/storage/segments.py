@@ -75,6 +75,13 @@ def _segment_to_row(raw_segment: dict) -> dict:
         # reconstruire (un profil qui monte et descend plusieurs fois n'est
         # pas déterminé par son seul min/max) — pas de valeur inventée.
         "total_elevation_gain_m": raw_segment["total_elevation_gain"],
+        # Tracé encodé (format Google Polyline) du segment, tel quel — pas
+        # décodé ici, `storage` n'extrait que des champs structurels, pas
+        # de géométrie (T-32, préparatoire : servira à calculer un cap RÉEL
+        # par tronçon plutôt que l'unique cap moyen start->end de
+        # heading_rad, pour projeter le vent correctement sur tout le
+        # segment, pas seulement à vol d'oiseau).
+        "polyline": raw_segment["map"]["polyline"],
         # Cap GLOBAL du segment (T-27), pas tronçon par tronçon : on n'a
         # que start_latlng/end_latlng ici, pas de profil détaillé au niveau
         # segment (T-07b). Nécessaire pour que le vent (T-15) ait un sens
