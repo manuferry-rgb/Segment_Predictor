@@ -24,6 +24,7 @@ from segment_predictor.calibrate.form import recent_performance_index_values
 from segment_predictor.models.draft import draft_ratio_for_preset
 from segment_predictor.models.pacing import optimize_pacing
 from segment_predictor.models.polyline import decode_polyline
+from segment_predictor.models.power import sustainable_power_w
 from segment_predictor.models.segment import SegmentChunk, segment_chunks_from_polyline
 from segment_predictor.models.uncertainty import propagate_uncertainty
 from segment_predictor.predict.forecast_window import rank_forecast_windows_for_segment
@@ -79,14 +80,48 @@ def _compass_label(direction_rad: float) -> str:
     return _COMPASS_LABELS[index]
 
 
-def _format_gap_s(predicted_s: float, target_s: float) -> str:
-    """Écart signé prédiction - référence, pour st.metric(delta=...).
+def _render_metric_card(
+    container,
+    label: str,
+    value: str,
+    delta_s: float | None = None,
+    extra_lines: list[str] | None = None,
+) -> None:
+    """Une "case" façon st.metric, mais où des lignes supplémentaires
+    (date, lien Strava, puissance...) vivent DANS la même boîte colorée,
+    pas en dessous dans une case visuellement séparée — ce que st.metric
+    ne permet pas (rien n'est injectable après son delta). Demandé
+    explicitement (T-31) pour les cases KOM/PR.
 
-    Positif = prédit plus lent que la référence (KOM ou PR), négatif =
-    plus rapide. `delta_color="inverse"` côté appelant fait que "plus
-    rapide" s'affiche en vert, "plus lent" en rouge.
+    `delta_s` : positif = prédiction plus LENTE que la référence (KOM ou
+    PR), négatif = plus rapide — reproduit à la main la coloration
+    "inverse" de st.metric (négatif = vert = bonne nouvelle, positif =
+    rouge), qu'on ne peut plus utiliser une fois sorti de st.metric.
+    `extra_lines` : déjà du HTML sûr à injecter tel quel (ex. un lien
+    `<a href=...>`) — c'est l'appelant qui les construit, cette fonction
+    ne fait qu'assembler la case.
     """
-    return f"{predicted_s - target_s:+.0f}s"
+    delta_html = ""
+    if delta_s is not None:
+        color_class = "kompass-delta-green" if delta_s < 0 else "kompass-delta-red"
+        arrow = "↓" if delta_s < 0 else "↑"
+        delta_html = f'<div class="kompass-card-delta {color_class}">{arrow} {delta_s:+.0f}s</div>'
+
+    extra_html = "".join(
+        f'<div class="kompass-card-extra">{line}</div>' for line in (extra_lines or [])
+    )
+
+    container.markdown(
+        f"""
+        <div class="kompass-card">
+            <div class="kompass-card-label">{label}</div>
+            <div class="kompass-card-value">{value}</div>
+            {delta_html}
+            {extra_html}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 # st.cache_resource : la connexion DuckDB n'est ouverte qu'une fois par
@@ -131,6 +166,49 @@ st.markdown(
     h1 {
         font-weight: 800;
         letter-spacing: -0.02em;
+    }
+    /* Cases KOM/PR (T-31 suite) : même habillage que div[data-testid="stMetric"]
+       ci-dessus, mais en HTML direct pour pouvoir empiler des lignes de
+       texte (date, lien Strava, puissance...) DANS la même boîte. */
+    .kompass-card {
+        background-color: #FFF1EC;
+        border-left: 4px solid #FF4B2B;
+        border-radius: 8px;
+        padding: 0.9rem 1rem 0.9rem 1rem;
+        margin-bottom: 1rem;
+    }
+    .kompass-card-label {
+        font-size: 0.875rem;
+        color: rgba(49, 51, 63, 0.6);
+    }
+    .kompass-card-value {
+        font-size: 1.65rem;
+        font-weight: 700;
+        line-height: 1.2;
+    }
+    .kompass-card-delta {
+        display: inline-block;
+        font-size: 0.8rem;
+        font-weight: 600;
+        padding: 0.05rem 0.45rem;
+        border-radius: 6px;
+        margin-top: 0.3rem;
+    }
+    .kompass-delta-green {
+        color: #1a7f37;
+        background-color: rgba(26, 127, 55, 0.12);
+    }
+    .kompass-delta-red {
+        color: #cf222e;
+        background-color: rgba(207, 34, 46, 0.12);
+    }
+    .kompass-card-extra {
+        font-size: 0.8rem;
+        color: rgba(49, 51, 63, 0.75);
+        margin-top: 0.4rem;
+    }
+    .kompass-card-extra a {
+        color: #FF4B2B;
     }
     </style>
     """,
@@ -213,10 +291,12 @@ if st.button("Chercher la meilleure fenêtre", type="primary"):
     col1, col2, col3 = st.columns(3)
     col1.metric("Temps prédit", _format_mmss(best.predicted_time_s))
     # Puissance requise (T-31) : CP + W'/t pour CE créneau, vent inclus —
-    # à comparer à ta puissance de PR réelle affichée plus bas, pas à
-    # "Puissance recommandée" en fin de page (celle-ci ignore le vent,
-    # voir son propre avertissement).
-    col1.caption(f"Puissance requise : {best.required_power_w:.0f} W")
+    # à comparer à ta puissance de PR réelle affichée plus bas. Le
+    # libellé précise "ce créneau, vent inclus" pour ne pas la confondre
+    # avec "Puissance de pacing (sans vent)" juste en dessous : deux
+    # réponses à deux questions différentes, pas deux estimations du
+    # même nombre (voir son propre avertissement).
+    col1.caption(f"Puissance requise pour ce créneau (vent inclus) : {best.required_power_w:.0f} W")
     col2.metric(
         "Vent",
         f"{best.wind_speed_ms * 3.6:.0f} km/h",
@@ -230,34 +310,52 @@ if st.button("Chercher la meilleure fenêtre", type="primary"):
     # qu'en bas de page.
     st.subheader("Stratégie de pacing")
     st.caption(
-        "⚠️ Un seul tronçon par segment — aucun profil pente/distance détaillé n'est "
-        "stocké au niveau segment (T-07b jamais fait). La puissance recommandée est "
-        "donc constante sur tout le segment : pas une vraie stratégie variable, juste "
-        "la puissance soutenable optimale pour ce profil simplifié. Calculée SANS vent "
-        "(contrairement à la puissance requise ci-dessus, propre à la meilleure fenêtre) "
-        "— les deux chiffres ne sont pas censés coïncider."
+        "Question différente de la puissance requise ci-dessus : pas 'combien de watts "
+        "pour ce créneau précis', mais 'quelle puissance constante optimale tenir sur ce "
+        "profil, vent mis à part'. ⚠️ Un seul tronçon par segment — aucun profil "
+        "pente/distance détaillé n'est stocké au niveau segment (T-07b jamais fait), donc "
+        "'constante' n'est pas une vraie stratégie variable, juste la puissance soutenable "
+        "optimale pour ce profil simplifié."
     )
     pacing_result = optimize_pacing(
         [chunk], cp_fit.cp_watts, cp_fit.w_prime_joules, mass_kg, effective_cda_m2, cda_crr_fit.crr
     )
-    st.metric("Puissance recommandée", f"{pacing_result.power_profile_w[0]:.0f} W")
+    st.metric("Puissance de pacing (sans vent)", f"{pacing_result.power_profile_w[0]:.0f} W")
 
     # Écart à combler (T-31) : référence = temps prédit sur la meilleure
-    # fenêtre, comparé au KOM du segment et à mon propre PR.
+    # fenêtre, comparé au KOM du segment et à mon propre PR. Rendu via
+    # _render_metric_card (T-31 suite) plutôt que st.metric + st.caption :
+    # les infos annexes (puissance, date, lien Strava, statut draft)
+    # doivent apparaître DANS la même case que le chiffre.
     kom_col, pr_col = st.columns(2)
-    kom_col.metric(
+
+    # Puissance estimée pour le KOM (T-31) : CP + W'/t appliqué à
+    # kom_seconds — TA puissance nécessaire si tu tenais ce temps, pas
+    # celle réellement développée par le recordman (Strava ne la fournit
+    # pas, aucune donnée à afficher pour un effort qui n'est pas le tien).
+    kom_power_w = sustainable_power_w(cp_fit.cp_watts, cp_fit.w_prime_joules, kom_seconds)
+    kom_extra_lines = [
+        f"Puissance estimée pour toi : {kom_power_w:.0f} W",
+        "Basée sur TON modèle CP à cette durée, pas la puissance réelle du recordman.",
+    ]
+    # CP+W'/t extrapolé hors de la plage de durées sur laquelle CP/W' ont
+    # été ajustés (fit_current_cp) est moins fiable — signalé plutôt que
+    # présenté comme une puissance aussi sûre que dans la plage calibrée.
+    duration_min_s, duration_max_s = cp_fit.duration_range_s
+    if not duration_min_s <= kom_seconds <= duration_max_s:
+        kom_extra_lines.append(
+            f"⚠️ {kom_seconds}s hors de la plage calibrée du modèle CP "
+            f"({duration_min_s}-{duration_max_s}s) : estimation moins fiable."
+        )
+    _render_metric_card(
+        kom_col,
         "KOM du segment",
         _format_mmss(kom_seconds),
-        delta=_format_gap_s(best.predicted_time_s, kom_seconds),
-        delta_color="inverse",
+        delta_s=best.predicted_time_s - kom_seconds,
+        extra_lines=kom_extra_lines,
     )
+
     if pr_seconds is not None:
-        pr_col.metric(
-            "Mon PR",
-            _format_mmss(pr_seconds),
-            delta=_format_gap_s(best.predicted_time_s, pr_seconds),
-            delta_color="inverse",
-        )
         # Détails de L'EFFORT DU PR (T-31), pour estimer soi-même la
         # puissance à tenir pour viser le KOM et retrouver la sortie
         # d'origine. Retrouvé par (segment_id, elapsed_time_s) :
@@ -269,19 +367,23 @@ if st.button("Chercher la meilleure fenêtre", type="primary"):
             "ORDER BY start_date DESC LIMIT 1",
             [segment_id, pr_seconds],
         ).fetchone()
+        pr_extra_lines = []
         if pr_effort_row is not None:
             pr_effort_id, pr_average_watts, device_watts, pr_start_date, pr_activity_id = (
                 pr_effort_row
             )
             strava_url = f"https://www.strava.com/activities/{pr_activity_id}"
-            pr_col.caption(f"Réalisé le {pr_start_date:%d/%m/%Y} · [Voir sur Strava]({strava_url})")
+            pr_extra_lines.append(
+                f"Réalisé le {pr_start_date:%d/%m/%Y} · "
+                f'<a href="{strava_url}" target="_blank">Voir sur Strava</a>'
+            )
             # `average_watts` peut être NULL (pas de capteur ce jour-là,
             # T-07b) — pas de valeur inventée, on l'indique explicitement.
             if pr_average_watts is not None:
                 sensor_note = "" if device_watts else " (non confirmé par un capteur)"
-                pr_col.caption(f"Puissance moyenne : {pr_average_watts:.0f} W{sensor_note}")
+                pr_extra_lines.append(f"Puissance moyenne : {pr_average_watts:.0f} W{sensor_note}")
             else:
-                pr_col.caption("Puissance moyenne : non disponible")
+                pr_extra_lines.append("Puissance moyenne : non disponible")
             # Statut de draft de CET effort (T-31) : la comparaison plus
             # haut (temps prédit vs PR) suppose implicitement un PR solo,
             # comme la prédiction elle-même — mais rien ne le garantit tant
@@ -290,14 +392,22 @@ if st.button("Chercher la meilleure fenêtre", type="primary"):
             # puissance égale : le signaler plutôt que le supposer.
             draft_status = load_existing_annotations(CSV_PATH).get(pr_effort_id, "unknown")
             if draft_status != "solo":
-                pr_col.caption(
+                pr_extra_lines.append(
                     f"⚠️ Statut draft de cet effort : {draft_status} — pas confirmé solo, "
-                    "la comparaison ci-dessus peut être biaisée."
+                    "la comparaison peut être biaisée."
                 )
         else:
-            pr_col.caption("Puissance moyenne : non disponible")
+            pr_extra_lines.append("Puissance moyenne : non disponible")
+
+        _render_metric_card(
+            pr_col,
+            "Mon PR",
+            _format_mmss(pr_seconds),
+            delta_s=best.predicted_time_s - pr_seconds,
+            extra_lines=pr_extra_lines,
+        )
     else:
-        pr_col.metric("Mon PR", "Jamais roulé")
+        _render_metric_card(pr_col, "Mon PR", "Jamais roulé")
 
     # Incertitude (T-28)
     performance_index_samples = recent_performance_index_values(conn, cp_fit=cp_fit)
