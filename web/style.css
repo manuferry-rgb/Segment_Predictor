@@ -291,6 +291,14 @@ h1, h2 { text-wrap: balance; margin: 0; }
   flex-wrap: wrap;
 }
 
+/* Comparaison "courbe de puissance réelle" (T-42) : plus discret que
+   .hero-sub (chiffre secondaire, pas la donnée principale du héro). */
+.hero-note {
+  margin: 0.5rem 0 0;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
 .hero-stats { display: flex; gap: 1rem; flex-wrap: wrap; }
 
 .stat-tile {

@@ -18,13 +18,22 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from segment_predictor.calibrate.cda_crr import calibrate_cda_crr_from_db
-from segment_predictor.calibrate.draft_tagging import fit_current_cp, load_existing_annotations
+from segment_predictor.calibrate.draft_tagging import (
+    DEFAULT_CP_FIT_DURATIONS_S,
+    compute_aggregate_mmp_curve,
+    fit_current_cp,
+    load_existing_annotations,
+)
 from segment_predictor.calibrate.form import recent_performance_index_values
 from segment_predictor.models.draft import draft_ratio_for_preset
 from segment_predictor.models.pacing import optimize_pacing
 from segment_predictor.models.polyline import decode_polyline
-from segment_predictor.models.power import sustainable_power_w
-from segment_predictor.models.segment import SegmentChunk, segment_chunks_from_polyline
+from segment_predictor.models.power import interpolate_mmp_curve, sustainable_power_w
+from segment_predictor.models.segment import (
+    SegmentChunk,
+    segment_chunks_from_polyline,
+    simulate_segment_time_from_mmp_curve,
+)
 from segment_predictor.models.uncertainty import propagate_uncertainty
 from segment_predictor.predict.forecast_window import rank_forecast_windows_for_segment
 from segment_predictor.predict.wind_scan import scan_segments_for_today
@@ -167,6 +176,18 @@ class UncertaintyInfo(BaseModel):
     n_excluded: int
 
 
+class RealPowerCurveEstimate(BaseModel):
+    """Puissance lue directement sur la courbe MMP RÉELLEMENT MESURÉE
+    (T-42a/T-42b), pas sur le modèle CP+W' lissé qui alimente `windows`
+    ci-dessous — répond à "si je donnais vraiment ma meilleure puissance
+    déjà atteinte pour cette durée, avec le vent de cette fenêtre, quel
+    temps ça donnerait ?". Ajouté à côté du classement, ne le remplace
+    pas (décision explicite, cf simulate_segment_time_from_mmp_curve)."""
+
+    predicted_time_s: float
+    power_w: float
+
+
 class PredictResponse(BaseModel):
     calibration: CalibrationInfo
     # windows[0] EST la meilleure fenêtre (rank_forecast_windows_for_segment
@@ -181,6 +202,12 @@ class PredictResponse(BaseModel):
     # None si pas assez d'efforts proches du maximum dans les 90 derniers
     # jours (T-23) pour estimer une distribution de forme à échantillonner.
     uncertainty: UncertaintyInfo | None
+    # None si le temps converge hors de la plage mesurée par la courbe MMP
+    # (~3-20 min, T-42a) — real_power_curve_unavailable_reason explique
+    # pourquoi plutôt qu'un null silencieux (message d'interpolate_mmp_curve
+    # ou de simulate_segment_time_from_mmp_curve tel quel, pas reformulé).
+    real_power_curve: RealPowerCurveEstimate | None
+    real_power_curve_unavailable_reason: str | None
 
 
 # def, pas async def (nouveau concept) : le corps fait de l'I/O bloquant
@@ -272,14 +299,17 @@ def predict(request: PredictRequest) -> PredictResponse:
             )
         pr_info = PrInfo(seconds=pr_seconds, effort=effort_info)
 
-    # Incertitude (T-28) : cap réel par tronçon (T-32), pas le chunk
-    # unique du pacing ci-dessus — le vent compte ici, un cap moyen
-    # unique le fausserait (voir HBFH, T-32).
+    # Cap réel par tronçon (T-32), pas le chunk unique du pacing ci-dessus —
+    # réutilisé par l'incertitude ET par la comparaison "courbe réelle"
+    # (T-42) juste en dessous : le vent compte dans les deux cas, un cap
+    # moyen unique le fausserait (voir HBFH, T-32).
+    best = windows[0]
+    chunks = segment_chunks_from_polyline(decode_polyline(polyline), average_grade)
+
+    # Incertitude (T-28)
     performance_index_samples = recent_performance_index_values(_connection, cp_fit=cp_fit)
     uncertainty_info = None
     if performance_index_samples:
-        best = windows[0]
-        chunks = segment_chunks_from_polyline(decode_polyline(polyline), average_grade)
         uncertainty_result = propagate_uncertainty(
             chunks,
             cp_watts=cp_fit.cp_watts,
@@ -301,6 +331,33 @@ def predict(request: PredictRequest) -> PredictResponse:
             n_samples=uncertainty_result.n_samples,
             n_excluded=uncertainty_result.n_excluded,
         )
+
+    # Comparaison "courbe de puissance réelle" (T-42) : amorcée par
+    # best.predicted_time_s (déjà une bonne estimation, cf modèle CP+W')
+    # plutôt que l'amorce générique — réduit le risque de sortir de la
+    # plage mesurée (~3-20 min) avant d'avoir convergé. N'affecte ni le
+    # classement ni predicted_time_s ci-dessus, uniquement ce chiffre de
+    # comparaison.
+    mmp_curve = compute_aggregate_mmp_curve(_connection, DEFAULT_CP_FIT_DURATIONS_S)
+    real_power_curve_info = None
+    real_power_curve_unavailable_reason = None
+    try:
+        real_time_s = simulate_segment_time_from_mmp_curve(
+            chunks,
+            mmp_curve,
+            request.mass_kg,
+            effective_cda_m2,
+            cda_crr_fit.crr,
+            wind_speed_ms=best.wind_speed_ms,
+            wind_direction_rad=best.wind_direction_rad,
+            initial_guess_s=best.predicted_time_s,
+        )
+        real_power_curve_info = RealPowerCurveEstimate(
+            predicted_time_s=real_time_s,
+            power_w=interpolate_mmp_curve(mmp_curve, real_time_s),
+        )
+    except ValueError as exc:
+        real_power_curve_unavailable_reason = str(exc)
 
     return PredictResponse(
         calibration=CalibrationInfo(
@@ -324,6 +381,8 @@ def predict(request: PredictRequest) -> PredictResponse:
         kom=kom_info,
         pr=pr_info,
         uncertainty=uncertainty_info,
+        real_power_curve=real_power_curve_info,
+        real_power_curve_unavailable_reason=real_power_curve_unavailable_reason,
     )
 
 

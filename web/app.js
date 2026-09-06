@@ -210,6 +210,23 @@ function renderUncertaintyCard(uncertainty, predictedTimeS) {
     </article>`;
 }
 
+// "Courbe de puissance réelle" (T-42) : comparaison additive, ne remplace
+// pas le temps prédit du modèle CP+W' ci-dessus dans le héro — répond à
+// "si je donnais vraiment ma meilleure puissance déjà atteinte pour cette
+// durée, avec ce vent, quel temps ça donnerait ?". `null` la plupart du
+// temps hors de la plage mesurée (~3-20 min) : le message vient tel quel
+// de l'API (interpolate_mmp_curve/simulate_segment_time_from_mmp_curve),
+// pas reformulé ici.
+function renderRealPowerCurveNote(realPowerCurve, reason, cpWatts) {
+  if (realPowerCurve === null) {
+    return `<p class="hero-note">Courbe de puissance réelle : ${reason}</p>`;
+  }
+  return `<p class="hero-note">
+    Avec ta courbe de puissance mesurée (pas le modèle) : ${formatMmSs(realPowerCurve.predicted_time_s)}
+    (${Math.round(realPowerCurve.power_w)} W ${zonePillHtml(realPowerCurve.power_w, cpWatts)}), vent inclus
+  </p>`;
+}
+
 function renderResults(data) {
   const best = data.windows[0];
   const windKmh = Math.round(best.wind_speed_ms * 3.6);
@@ -225,6 +242,7 @@ function renderResults(data) {
           ${formatDayHour(best.time)}
           ${zonePillHtml(best.required_power_w, cpWatts)} ${Math.round(best.required_power_w)} W requis
         </p>
+        ${renderRealPowerCurveNote(data.real_power_curve, data.real_power_curve_unavailable_reason, cpWatts)}
       </div>
       <div class="hero-stats">
         <div class="stat-tile">

@@ -306,3 +306,34 @@ Streamlit, suppression de `app.py`, `pages/`, `.streamlit/` et de la
 dépendance `streamlit`.
 *Critère de fin* : Streamlit n'est plus une dépendance du projet,
 `uv run pytest` et `uv run ruff check .` passent toujours.
+
+---
+
+## Phase 12 — Courbe de puissance réelle, à côté du modèle CP+W'
+
+**T-42 — Temps prédit à partir de la courbe MMP réellement mesurée**
+Le temps prédit et la puissance requise (T-27/T-31) viennent tous deux
+du modèle CP+W' (2 paramètres, lissé, extrapolable à toute durée mais
+moins fidèle hors de sa plage calibrée). `compute_aggregate_mmp_curve`
+(T-09) donne pourtant la courbe RÉELLEMENT mesurée (7 points, 3-20 min)
+mais ne servait qu'à caler ce modèle, jamais à prédire directement.
+Ajoute, à CÔTÉ du modèle (ne le remplace ni dans le classement des
+créneaux ni dans `predicted_time_s`, décision explicite) : "si je
+donnais vraiment ma meilleure puissance déjà atteinte pour cette durée,
+avec le vent de cette fenêtre, quel temps ça donnerait ?"
+- `interpolate_mmp_curve` (models/power.py) : lecture directe entre deux
+  points mesurés (droite, pas un modèle ajusté) — ValueError explicite
+  hors de la plage mesurée, pas d'extrapolation inventée.
+- `simulate_segment_time_from_mmp_curve` (models/segment.py) : même
+  boucle de convergence que `simulate_segment_time` (factorisée,
+  `_simulate_time_with_power_curve`), mais la puissance vient de la
+  courbe réelle. Amorçable par le temps déjà prédit par CP+W'
+  (`initial_guess_s`) pour limiter le risque de sortir de la plage
+  mesurée avant d'avoir convergé.
+- `POST /predict` : nouveau champ `real_power_curve` (ou
+  `real_power_curve_unavailable_reason` si hors plage), affiché en
+  petit sous le héro.
+*Critère de fin* : sur un segment dont le temps prédit tombe dans
+[3, 20] min, un second chiffre "avec ta courbe mesurée" apparaît à côté
+du temps prédit ; en dehors, un message explique pourquoi plutôt qu'un
+silence ou un crash.
