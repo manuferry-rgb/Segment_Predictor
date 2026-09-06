@@ -21,6 +21,7 @@ from segment_predictor.models.segment import (
     haversine_distance_m,
     segment_chunks_from_polyline,
     simulate_segment_time,
+    simulate_segment_time_from_mmp_curve,
     smooth_altitude,
 )
 
@@ -559,3 +560,97 @@ def test_simulate_segment_time_wind_applies_per_chunk_heading() -> None:
     # le trajet aller-retour (face puis dos) doit être plus rapide que
     # face sur toute la distance : le vent de dos du 2e tronçon compense.
     assert time_s < all_headwind_time_s
+
+
+# ---- simulate_segment_time_from_mmp_curve (T-42b) --------------------------------------------
+# Même boucle de convergence que simulate_segment_time (partagée en interne),
+# mais la puissance vient de la courbe MMP RÉELLE (interpolate_mmp_curve,
+# T-42a) plutôt que du modèle CP+W' — un mmp_curve "plat" (même watts aux
+# deux bornes) rend le résultat prévisible : interpolate_mmp_curve renvoie
+# alors cette valeur pour n'importe quelle durée dans la plage, donc le
+# résultat doit être identique à une simulation à cette puissance constante.
+
+_FLAT_MMP_CURVE = {60: 300.0, 3600: 300.0}  # plage large, puissance constante dedans
+
+
+def _constant_power_time_s(chunks: list[SegmentChunk], power_w: float) -> float:
+    """Référence indépendante : temps à `power_w` CONSTANTE, sans boucle de
+    convergence — même principe que _cp_only_time_s plus haut."""
+    total_time_s = 0.0
+    for chunk in chunks:
+        speed_ms = cyclist_speed_from_power(
+            power_w, chunk.grade, 0.0, _MASS_KG, _CDA_M2, _CRR, STANDARD_AIR_DENSITY_KG_M3
+        )
+        total_time_s += chunk.length_m / speed_ms
+    return total_time_s
+
+
+def test_simulate_segment_time_from_mmp_curve_matches_constant_power_for_a_flat_curve() -> None:
+    chunks = [SegmentChunk(0.0, 2000.0, 0.0, 0.0)]
+
+    simulated_time_s = simulate_segment_time_from_mmp_curve(
+        chunks, _FLAT_MMP_CURVE, _MASS_KG, _CDA_M2, _CRR
+    )
+
+    assert simulated_time_s == pytest.approx(_constant_power_time_s(chunks, 300.0), abs=0.1)
+
+
+def test_simulate_segment_time_from_mmp_curve_uses_the_real_curve_not_cp_w_prime() -> None:
+    """Sur une courbe RÉELLE non plate, deux durées différentes donnent des
+    puissances différentes — contrairement à _FLAT_MMP_CURVE ci-dessus, ce
+    test vérifie que le résultat dépend bien de la courbe fournie (pas
+    d'un modèle CP+W' caché quelque part)."""
+    chunks = [SegmentChunk(0.0, 2000.0, 0.0, 0.0)]
+    high_power_curve = {60: 500.0, 3600: 500.0}
+    low_power_curve = {60: 150.0, 3600: 150.0}
+
+    fast_time_s = simulate_segment_time_from_mmp_curve(
+        chunks, high_power_curve, _MASS_KG, _CDA_M2, _CRR
+    )
+    slow_time_s = simulate_segment_time_from_mmp_curve(
+        chunks, low_power_curve, _MASS_KG, _CDA_M2, _CRR
+    )
+
+    assert fast_time_s < slow_time_s
+
+
+def test_simulate_segment_time_from_mmp_curve_raises_when_converged_time_is_out_of_range() -> None:
+    # Distance minuscule -> temps convergé de quelques secondes, hors de
+    # la plage mesurée [180, 1200]s -> pas d'extrapolation (T-42a).
+    chunks = [SegmentChunk(0.0, 5.0, 0.0, 0.0)]
+    narrow_curve = {180: 320.0, 1200: 300.0}
+
+    with pytest.raises(ValueError, match="hors de la plage"):
+        simulate_segment_time_from_mmp_curve(chunks, narrow_curve, _MASS_KG, _CDA_M2, _CRR)
+
+
+def test_simulate_segment_time_from_mmp_curve_headwind_is_slower_than_no_wind() -> None:
+    chunks = [SegmentChunk(0.0, 2000.0, 0.0, heading_rad=0.0)]
+
+    no_wind = simulate_segment_time_from_mmp_curve(chunks, _FLAT_MMP_CURVE, _MASS_KG, _CDA_M2, _CRR)
+    headwind = simulate_segment_time_from_mmp_curve(
+        chunks, _FLAT_MMP_CURVE, _MASS_KG, _CDA_M2, _CRR, wind_speed_ms=5.0, wind_direction_rad=0.0
+    )
+
+    assert headwind > no_wind
+
+
+def test_simulate_segment_time_from_mmp_curve_initial_guess_does_not_change_the_result() -> None:
+    """`initial_guess_s` (T-42b) n'est qu'une amorce pour la boucle de point
+    fixe — le résultat convergé ne doit pas en dépendre, seule la capacité
+    à converger sans sortir de la plage mesurée peut en dépendre."""
+    chunks = [SegmentChunk(0.0, 2000.0, 0.0, 0.0)]
+
+    default_seed = simulate_segment_time_from_mmp_curve(
+        chunks, _FLAT_MMP_CURVE, _MASS_KG, _CDA_M2, _CRR
+    )
+    seeded = simulate_segment_time_from_mmp_curve(
+        chunks, _FLAT_MMP_CURVE, _MASS_KG, _CDA_M2, _CRR, initial_guess_s=200.0
+    )
+
+    assert seeded == pytest.approx(default_seed, abs=0.1)
+
+
+def test_simulate_segment_time_from_mmp_curve_raises_on_empty_chunks() -> None:
+    with pytest.raises(ValueError, match="tronçon"):
+        simulate_segment_time_from_mmp_curve([], _FLAT_MMP_CURVE, _MASS_KG, _CDA_M2, _CRR)

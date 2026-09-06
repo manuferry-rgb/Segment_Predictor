@@ -9,11 +9,13 @@ prédit, à la puissance soutenable par le modèle CP).
 
 import itertools
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
 
 from .physics import air_density, cyclist_speed_from_power, effective_headwind_speed_ms
+from .power import interpolate_mmp_curve, sustainable_power_w
 
 # ISA, niveau de la mer, 15°C — dérivé de air_density() plutôt qu'un
 # littéral séparé, pour rester cohérent avec T-10 par construction.
@@ -300,6 +302,68 @@ def _simulate_at_constant_power(
     return total_time_s
 
 
+def _simulate_time_with_power_curve(
+    chunks: list[SegmentChunk],
+    power_curve_fn: Callable[[float], float],
+    mass_kg: float,
+    cda_m2: float,
+    crr: float,
+    air_density_kg_m3: float,
+    wind_speed_ms: float,
+    wind_direction_rad: float,
+    max_iterations: int,
+    convergence_tolerance_s: float,
+    initial_guess_s: float | None,
+) -> float:
+    """Boucle de convergence par point fixe partagée par `simulate_segment_time`
+    (T-13, courbe CP+W') et `simulate_segment_time_from_mmp_curve` (T-42,
+    courbe MMP réellement mesurée) — seule la source de puissance en
+    fonction de la durée change (`power_curve_fn`), la mécanique de
+    convergence est identique : la puissance soutenable sur T dépend de T,
+    qui dépend lui-même de cette puissance. On itère jusqu'à stabilisation.
+    Jamais de valeur retournée en silence si ça ne converge pas : ValueError
+    explicite au-delà de `max_iterations` — et `power_curve_fn` peut lever
+    sa propre ValueError à tout moment (ex. `interpolate_mmp_curve` hors de
+    sa plage mesurée), qui remonte telle quelle.
+
+    `initial_guess_s` : amorce de la boucle. `None` retombe sur l'amorce
+    grossière historique (longueur/8, ~29 km/h) ; un appelant qui dispose
+    déjà d'une meilleure estimation (ex. le temps prédit par le modèle
+    CP+W' pour ce même segment) peut la fournir pour réduire le risque de
+    sortir de la plage mesurée d'une courbe MMP réelle avant d'avoir pu
+    converger — le résultat au point fixe ne dépend pas de l'amorce,
+    seule la trajectoire pour l'atteindre en dépend.
+    """
+    if not chunks:
+        raise ValueError("aucun tronçon à simuler")
+
+    if initial_guess_s is None:
+        total_length_m = sum(chunk.length_m for chunk in chunks)
+        initial_guess_s = total_length_m / 8.0  # amorce grossière (~29 km/h) ; la boucle corrige
+    predicted_time_s = initial_guess_s
+
+    for _ in range(max_iterations):
+        power_w = power_curve_fn(predicted_time_s)
+        new_time_s = _simulate_at_constant_power(
+            chunks,
+            power_w,
+            mass_kg,
+            cda_m2,
+            crr,
+            air_density_kg_m3,
+            wind_speed_ms,
+            wind_direction_rad,
+        )
+        if abs(new_time_s - predicted_time_s) < convergence_tolerance_s:
+            return new_time_s
+        predicted_time_s = new_time_s
+
+    raise ValueError(
+        f"pas de convergence après {max_iterations} itérations "
+        f"(dernier temps prédit : {predicted_time_s:.1f}s, tolérance : {convergence_tolerance_s}s)"
+    )
+
+
 def simulate_segment_time(
     chunks: list[SegmentChunk],
     cp_watts: float,
@@ -323,37 +387,67 @@ def simulate_segment_time(
     confondre avec `heading_rad` des tronçons (direction OÙ ON VA).
     Défaut (0.0, 0.0) : aucun effet, comportement identique à avant T-27.
 
-    Boucle de convergence (point fixe) : la puissance soutenable
-    `CP + W'/T` dépend du temps T du segment, qui dépend lui-même de la
-    puissance qu'on peut tenir sur ce temps. On itère : estimer T, en
-    déduire la puissance soutenable, simuler le tour à cette puissance
-    constante pour obtenir un nouveau T, répéter jusqu'à ce que T se
-    stabilise. Jamais de valeur retournée en silence si ça ne converge
-    pas : ValueError explicite au-delà de `max_iterations`.
+    Boucle de convergence : voir `_simulate_time_with_power_curve` (T-42,
+    factorisée là plutôt que dupliquée entre cette fonction et
+    `simulate_segment_time_from_mmp_curve`). Ici la source de puissance est
+    le modèle CP+W' (`sustainable_power_w`, models.power).
     """
-    if not chunks:
-        raise ValueError("aucun tronçon à simuler")
+    return _simulate_time_with_power_curve(
+        chunks,
+        lambda predicted_time_s: sustainable_power_w(cp_watts, w_prime_joules, predicted_time_s),
+        mass_kg,
+        cda_m2,
+        crr,
+        air_density_kg_m3,
+        wind_speed_ms,
+        wind_direction_rad,
+        max_iterations,
+        convergence_tolerance_s,
+        initial_guess_s=None,
+    )
 
-    total_length_m = sum(chunk.length_m for chunk in chunks)
-    predicted_time_s = total_length_m / 8.0  # amorce grossière (~29 km/h) ; la boucle corrige
 
-    for _ in range(max_iterations):
-        sustainable_power_w = cp_watts + w_prime_joules / predicted_time_s
-        new_time_s = _simulate_at_constant_power(
-            chunks,
-            sustainable_power_w,
-            mass_kg,
-            cda_m2,
-            crr,
-            air_density_kg_m3,
-            wind_speed_ms,
-            wind_direction_rad,
-        )
-        if abs(new_time_s - predicted_time_s) < convergence_tolerance_s:
-            return new_time_s
-        predicted_time_s = new_time_s
+def simulate_segment_time_from_mmp_curve(
+    chunks: list[SegmentChunk],
+    mmp_curve: dict[int, float],
+    mass_kg: float,
+    cda_m2: float,
+    crr: float,
+    air_density_kg_m3: float = STANDARD_AIR_DENSITY_KG_M3,
+    wind_speed_ms: float = 0.0,
+    wind_direction_rad: float = 0.0,
+    max_iterations: int = DEFAULT_MAX_ITERATIONS,
+    convergence_tolerance_s: float = DEFAULT_CONVERGENCE_TOLERANCE_S,
+    initial_guess_s: float | None = None,
+) -> float:
+    """Variante de `simulate_segment_time` (T-13) qui lit la puissance
+    soutenable directement sur la courbe MMP RÉELLEMENT MESURÉE (T-42a,
+    `interpolate_mmp_curve`) plutôt que sur le modèle CP+W' lissé —
+    répond à "si je donnais vraiment ma meilleure puissance déjà atteinte
+    pour cette durée, avec le vent de ce créneau, quel temps ça donnerait ?"
+    Ajoutée à côté de `simulate_segment_time`, pas à sa place (décision
+    explicite) : le classement des créneaux continue de reposer sur le
+    modèle CP+W', cette fonction n'alimente qu'un chiffre de comparaison.
 
-    raise ValueError(
-        f"pas de convergence après {max_iterations} itérations "
-        f"(dernier temps prédit : {predicted_time_s:.1f}s, tolérance : {convergence_tolerance_s}s)"
+    Peut lever la ValueError d'`interpolate_mmp_curve` si le temps converge
+    hors de la plage mesurée par `mmp_curve` (pas d'extrapolation, T-42a) —
+    contrairement à `simulate_segment_time`, qui répond toujours (le modèle
+    CP+W' extrapole, moins fidèlement mais sans jamais lever pour ça).
+    `initial_guess_s` : voir `_simulate_time_with_power_curve` — utile ici
+    pour amorcer avec le temps déjà prédit par le modèle CP+W' plutôt que
+    l'amorce générique, et réduire le risque de sortir de la plage mesurée
+    avant d'avoir convergé.
+    """
+    return _simulate_time_with_power_curve(
+        chunks,
+        lambda predicted_time_s: interpolate_mmp_curve(mmp_curve, predicted_time_s),
+        mass_kg,
+        cda_m2,
+        crr,
+        air_density_kg_m3,
+        wind_speed_ms,
+        wind_direction_rad,
+        max_iterations,
+        convergence_tolerance_s,
+        initial_guess_s,
     )
