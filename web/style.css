@@ -1,29 +1,453 @@
-/* T-39 : minimum pour que la page soit lisible et utilisable — la vraie
-   feuille de style (grille, cartes, palette) arrive en T-40. */
+/* T-40 : direction visuelle validée via maquette (artifact), portée ici
+   telle quelle — voir ROADMAP.md T-40. Palette dark-first ("graphite
+   chaud" + accent or, référence au maillot du meilleur grimpeur), avec
+   un thème clair complet en secours (prefers-color-scheme / data-theme).
+
+   Système de zones (--zone-*) : classe chaque lecture de puissance
+   (pacing, KOM, PR, requis) selon sa position par rapport à CP —
+   Endurance/Tempo/Seuil/VO2max/Anaérobie, calquées sur les zones
+   Coggan usuelles en cyclisme. Approximation ASSUMÉE : CP (modèle du
+   projet) sert ici de référence de seuil, pas une vraie mesure de FTP —
+   suffisant pour une classification indicative, pas un diagnostic
+   physiologique. Calcul fait côté JS (app.js), cf sa docstring. */
+
+:root {
+  /* Dit au navigateur qu'on gère nous-mêmes les deux thèmes — sans ça,
+     certains navigateurs repeignent le texte de façon incohérente avec
+     nos propres couleurs (observé en dev, cf commentaire du même nom
+     dans la maquette de T-40). */
+  color-scheme: dark;
+  --ground: #17141c;
+  --surface: #211d28;
+  --surface-2: #2a2432;
+  --border: #372f41;
+  --text: #f3efe8;
+  --text-muted: #a79ab0;
+  --accent: #e8b33d;
+  --accent-ink: #241a05;
+  --shadow: rgba(0, 0, 0, 0.45);
+
+  --zone-endurance: #7c8db3;
+  --zone-tempo: #4fb0b5;
+  --zone-seuil: #5fbd7f;
+  --zone-vo2: #e8955a;
+  --zone-anaerobie: #e2635a;
+
+  --font-display: "Big Shoulders Display", "Arial Narrow", sans-serif;
+  --font-body: "Archivo", -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+    --ground: #f6f2ea;
+    --surface: #ffffff;
+    --surface-2: #efe9db;
+    --border: #ddd3bf;
+    --text: #221c28;
+    --text-muted: #6b6075;
+    --accent: #a66a16;
+    --accent-ink: #fff8ec;
+    --shadow: rgba(40, 30, 10, 0.14);
+
+    --zone-endurance: #48597a;
+    --zone-tempo: #2c6f74;
+    --zone-seuil: #3b7d54;
+    --zone-vo2: #b85a26;
+    --zone-anaerobie: #a6332a;
+  }
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --ground: #f6f2ea;
+  --surface: #ffffff;
+  --surface-2: #efe9db;
+  --border: #ddd3bf;
+  --text: #221c28;
+  --text-muted: #6b6075;
+  --accent: #a66a16;
+  --accent-ink: #fff8ec;
+  --shadow: rgba(40, 30, 10, 0.14);
+
+  --zone-endurance: #48597a;
+  --zone-tempo: #2c6f74;
+  --zone-seuil: #3b7d54;
+  --zone-vo2: #b85a26;
+  --zone-anaerobie: #a6332a;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ground: #17141c;
+  --surface: #211d28;
+  --surface-2: #2a2432;
+  --border: #372f41;
+  --text: #f3efe8;
+  --text-muted: #a79ab0;
+  --accent: #e8b33d;
+  --accent-ink: #241a05;
+  --shadow: rgba(0, 0, 0, 0.45);
+
+  --zone-endurance: #7c8db3;
+  --zone-tempo: #4fb0b5;
+  --zone-seuil: #5fbd7f;
+  --zone-vo2: #e8955a;
+  --zone-anaerobie: #e2635a;
+}
+
+* { box-sizing: border-box; }
 
 body {
-  font-family: system-ui, sans-serif;
-  max-width: 720px;
-  margin: 2rem auto;
-  padding: 0 1rem;
-  color: #1a1a2e;
+  margin: 0;
+  background: var(--ground);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.5;
 }
 
-form {
+.page {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 1.75rem 1.5rem 4rem;
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
-  margin-bottom: 1.5rem;
+  gap: 1.75rem;
 }
 
-table {
-  border-collapse: collapse;
+h1, h2 { text-wrap: balance; margin: 0; }
+
+/* ---- barre du haut ---- */
+.topbar { display: flex; align-items: center; gap: 1.5rem; flex-wrap: wrap; }
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 1.55rem;
+  letter-spacing: 0.01em;
+}
+
+.brand svg { width: 26px; height: 26px; flex: none; }
+
+.tabs { display: flex; gap: 0.4rem; }
+
+.tab {
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 0.4rem 0.85rem;
+  border-radius: 999px;
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.tab--active {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.tab--soon em {
+  font-style: normal;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  background: var(--surface-2);
+  padding: 0.15rem 0.4rem;
+  border-radius: 999px;
+}
+
+/* ---- barre de contrôle ---- */
+.controlbar {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.9rem;
+  flex-wrap: wrap;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 1.1rem;
+  margin: 0;
+}
+
+.field { display: flex; flex-direction: column; gap: 0.35rem; flex: 1 1 200px; }
+
+.field label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.select-wrap { position: relative; }
+
+/* appearance: none (nouveau concept) : retire le look natif du <select>
+   du système d'exploitation pour pouvoir le styler comme le reste de
+   l'UI — le petit chevron du navigateur disparaît avec, remplacé par
+   notre propre <svg class="chevron"> positionné par-dessus. */
+.select-wrap select,
+.field input {
   width: 100%;
+  appearance: none;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 0.6rem 0.75rem;
+  font: inherit;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
 }
 
-th,
-td {
-  border: 1px solid #ddd;
-  padding: 0.35rem 0.5rem;
-  text-align: left;
+.select-wrap select {
+  padding-right: 2rem;
+  /* Nom de segment souvent long : ellipse plutôt qu'une troncature
+     brutale au bord du champ. */
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow: hidden;
 }
+
+.field input { cursor: text; }
+
+/* Champ "Segment" plus large que "Scénario de draft"/"Poids" : c'est
+   celui dont le contenu (nom + distance + D+) varie le plus. */
+.field--segment { flex-grow: 2.4; flex-basis: 260px; }
+
+.select-wrap select:focus-visible,
+.field input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.select-wrap .chevron {
+  position: absolute;
+  right: 0.75rem;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+  color: var(--text-muted);
+}
+
+.btn-primary {
+  font-family: var(--font-body);
+  font-weight: 700;
+  font-size: 0.9rem;
+  background: var(--accent);
+  color: var(--accent-ink);
+  border: none;
+  border-radius: 9px;
+  padding: 0.75rem 1.35rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.btn-primary:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+.btn-primary:disabled { opacity: 0.6; cursor: wait; }
+
+.status-line { margin: 0; font-size: 0.85rem; color: var(--text-muted); min-height: 1.2em; }
+
+/* ---- héro ---- */
+.hero {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 2rem;
+  flex-wrap: wrap;
+  padding: 0.5rem 0.25rem;
+}
+
+.eyebrow {
+  margin: 0 0 0.2rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--text-muted);
+}
+
+.hero-time {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: clamp(3.6rem, 9vw, 6rem);
+  line-height: 0.92;
+  font-variant-numeric: tabular-nums;
+}
+
+.hero-sub {
+  margin: 0.4rem 0 0;
+  font-size: 0.95rem;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.hero-stats { display: flex; gap: 1rem; flex-wrap: wrap; }
+
+.stat-tile {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.85rem 1.1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  min-width: 148px;
+}
+
+.stat-value { margin: 0; font-weight: 700; font-size: 1.15rem; font-variant-numeric: tabular-nums; }
+.stat-tile.mono .stat-value { font-family: var(--font-mono); font-size: 0.98rem; }
+.stat-label { margin: 0.1rem 0 0; font-size: 0.74rem; color: var(--text-muted); }
+
+.compass { position: relative; width: 40px; height: 40px; flex: none; }
+.compass svg { width: 100%; height: 100%; }
+.compass .needle { transform-origin: 20px 20px; transform: rotate(var(--deg)); }
+
+/* ---- pastilles de zone (% de CP, cf docstring plus haut) ---- */
+.zone-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.zone-pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+.zone-endurance { color: var(--zone-endurance); background: color-mix(in srgb, var(--zone-endurance) 16%, transparent); }
+.zone-tempo { color: var(--zone-tempo); background: color-mix(in srgb, var(--zone-tempo) 16%, transparent); }
+.zone-seuil { color: var(--zone-seuil); background: color-mix(in srgb, var(--zone-seuil) 16%, transparent); }
+.zone-vo2 { color: var(--zone-vo2); background: color-mix(in srgb, var(--zone-vo2) 16%, transparent); }
+.zone-anaerobie { color: var(--zone-anaerobie); background: color-mix(in srgb, var(--zone-anaerobie) 16%, transparent); }
+
+/* ---- corps en 2 colonnes ---- */
+.body-grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: 1.25rem; align-items: start; }
+@media (max-width: 860px) { .body-grid { grid-template-columns: 1fr; } }
+
+.col-left, .col-right { display: flex; flex-direction: column; gap: 1.25rem; }
+
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
+@media (max-width: 560px) { .pair { grid-template-columns: 1fr; } }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 1.25rem 1.35rem;
+  box-shadow: 0 10px 24px -18px var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.card h2 {
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-muted);
+}
+
+.card-note { margin: 0; font-size: 0.85rem; color: var(--text-muted); }
+
+.big-figure {
+  margin: 0.1rem 0 0;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 2.1rem;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.figure-sub { font-family: var(--font-body); font-size: 1rem; font-weight: 600; color: var(--text-muted); }
+
+.warn { margin: 0.2rem 0 0; font-size: 0.78rem; color: var(--zone-anaerobie); }
+
+.card--accent { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+
+/* ---- bande d'incertitude à l'échelle (cf computeRangeBar, app.js) ---- */
+.range-bar { margin-top: 0.4rem; }
+
+.range-track {
+  position: relative;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+.range-band {
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  background: color-mix(in srgb, var(--accent) 55%, transparent);
+  border-radius: 999px;
+}
+
+.range-mark { position: absolute; top: -5px; width: 2px; height: 18px; background: var(--text); }
+
+.range-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  margin-top: 0.3rem;
+  font-family: var(--font-mono);
+}
+
+.range-callouts {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.76rem;
+  margin-top: 0.5rem;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.range-callouts strong { font-variant-numeric: tabular-nums; }
+
+/* ---- table de classement ---- */
+.table-wrap { overflow-x: auto; }
+
+table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
+
+th {
+  text-align: left;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  font-weight: 600;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+}
+
+td {
+  padding: 0.5rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+/* Première ligne = meilleure fenêtre (windows[0], déjà trié par l'API) */
+tbody tr:first-child { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+tbody tr:first-child td { font-weight: 600; }
+tbody tr:last-child td { border-bottom: none; }

@@ -4,42 +4,68 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Kompass</title>
+    <!-- Big Shoulders Display (gros chiffres, style tableau d'affichage),
+         Archivo (texte courant), JetBrains Mono (données tabulaires) —
+         direction validée en T-40 (maquette), voir web/style.css. -->
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700;800&family=Archivo:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+    />
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    <h1>🚴 Kompass</h1>
-    <p>Meilleure fenêtre horaire et stratégie de pacing pour un segment Strava</p>
+    <div class="page">
+      <header class="topbar">
+        <div class="brand">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <circle cx="12" cy="12" r="10" stroke="var(--accent)" stroke-width="1.6" />
+            <path d="M15.5 8.5 L11 11 L8.5 15.5 L13 13 Z" fill="var(--accent)" />
+          </svg>
+          Kompass
+        </div>
+        <nav class="tabs">
+          <span class="tab tab--active">Segment</span>
+          <span class="tab tab--soon">Segments du jour <em>bientôt · T-41</em></span>
+        </nav>
+      </header>
 
-    <!-- T-39 : squelette mécanique — aucun style poussé, seulement de quoi
-         vérifier que fetch("/predict") et le rendu marchent de bout en
-         bout. Le vrai travail de design (grille, cartes, typo) vient en
-         T-40, une fois cette mécanique validée. -->
-    <form id="predict-form">
-      <label>
-        Segment
-        <select id="segment-select" required></select>
-      </label>
+      <form id="predict-form" class="controlbar">
+        <div class="field field--segment">
+          <label for="segment-select">Segment</label>
+          <div class="select-wrap">
+            <select id="segment-select" required></select>
+            <svg class="chevron" width="14" height="14" viewBox="0 0 24 24" fill="none">
+              <path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+            </svg>
+          </div>
+        </div>
 
-      <label>
-        Scénario de draft
-        <select id="draft-select">
-          <option value="solo">Solo</option>
-          <option value="roue_collee">Roue collée</option>
-          <option value="un_metre">Un mètre</option>
-          <option value="groupe">Groupe</option>
-        </select>
-      </label>
+        <div class="field">
+          <label for="draft-select">Scénario de draft</label>
+          <div class="select-wrap">
+            <select id="draft-select">
+              <option value="solo">Solo</option>
+              <option value="roue_collee">Roue collée</option>
+              <option value="un_metre">Un mètre</option>
+              <option value="groupe">Groupe</option>
+            </select>
+            <svg class="chevron" width="14" height="14" viewBox="0 0 24 24" fill="none">
+              <path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+            </svg>
+          </div>
+        </div>
 
-      <label>
-        Poids (toi + vélo, kg)
-        <input id="mass-input" type="number" value="91" min="30" max="200" step="0.5" required />
-      </label>
+        <div class="field">
+          <label for="mass-input">Poids (toi + vélo, kg)</label>
+          <input id="mass-input" type="number" value="91" min="30" max="200" step="0.5" required />
+        </div>
 
-      <button type="submit">Chercher la meilleure fenêtre</button>
-    </form>
+        <button type="submit" class="btn-primary">Chercher la meilleure fenêtre</button>
+      </form>
 
-    <p id="status"></p>
-    <div id="results" hidden></div>
+      <p id="status" class="status-line"></p>
+      <div id="results" hidden></div>
+    </div>
 
     <script src="app.js"></script>
   </body>
