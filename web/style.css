@@ -423,7 +423,18 @@ h1, h2 { text-wrap: balance; margin: 0; }
 .range-callouts strong { font-variant-numeric: tabular-nums; }
 
 /* ---- table de classement ---- */
-.table-wrap { overflow-x: auto; }
+/* max-height (nouveau, T-40) : sur 10 jours, la plage 6h-21h peut donner
+   plus de 150 créneaux (rank_forecast_windows_for_segment) — sans plafond,
+   le tableau à lui seul rendrait la page interminable. La meilleure
+   fenêtre reste visible en premier (tri déjà fait par l'API) même sans
+   scroller. */
+.table-wrap { overflow-x: auto; overflow-y: auto; max-height: 420px; }
+
+.table-wrap thead th {
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+}
 
 table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
 

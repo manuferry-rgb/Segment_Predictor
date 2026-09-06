@@ -1,13 +1,15 @@
-// T-39 : squelette mécanique du frontend — aucun style poussé ici (T-40).
-// Différence principale avec app.py (Streamlit) : ici c'est CE fichier,
-// exécuté dans le navigateur, qui reconstruit le HTML des résultats à
-// partir du JSON reçu — Python ne dessine plus rien, il ne fait que
-// répondre à des requêtes HTTP (voir api/main.py).
+// T-39/T-40 : squelette mécanique + rendu visuel (direction validée par
+// maquette, cf ROADMAP.md T-40). Différence principale avec app.py
+// (Streamlit) : ici c'est CE fichier, exécuté dans le navigateur, qui
+// reconstruit le HTML des résultats à partir du JSON reçu — Python ne
+// dessine plus rien, il ne fait que répondre à des requêtes HTTP
+// (voir api/main.py).
 
 const segmentSelect = document.getElementById("segment-select");
 const draftSelect = document.getElementById("draft-select");
 const massInput = document.getElementById("mass-input");
 const form = document.getElementById("predict-form");
+const submitButton = form.querySelector("button[type=submit]");
 const statusEl = document.getElementById("status");
 const resultsEl = document.getElementById("results");
 
@@ -19,6 +21,13 @@ function compassLabel(directionRad) {
   const degrees = ((directionRad * 180) / Math.PI + 360) % 360;
   const index = Math.round(degrees / 45) % COMPASS_LABELS.length;
   return COMPASS_LABELS[index];
+}
+
+// Rotation CSS (deg) pour l'aiguille de la boussole — même angle que
+// compassLabel, juste sans l'arrondi aux 8 points cardinaux : le
+// dessin peut être précis là où le libellé texte doit rester lisible.
+function compassRotationDeg(directionRad) {
+  return ((directionRad * 180) / Math.PI + 360) % 360;
 }
 
 function formatMmSs(seconds) {
@@ -39,6 +48,45 @@ function formatDayHour(isoString) {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+// Zones d'effort (% de CP) pour les pastilles de couleur — calquées sur
+// les zones Coggan usuelles en cyclisme. Approximation ASSUMÉE et
+// documentée (cf web/style.css, même docstring) : CP (modèle du
+// projet) sert ici de référence de seuil, pas une vraie mesure de FTP.
+const POWER_ZONES = [
+  { max: 0.75, label: "Endurance", className: "zone-endurance" },
+  { max: 0.9, label: "Tempo", className: "zone-tempo" },
+  { max: 1.03, label: "Seuil", className: "zone-seuil" },
+  { max: 1.15, label: "VO2max", className: "zone-vo2" },
+  { max: Infinity, label: "Anaérobie", className: "zone-anaerobie" },
+];
+
+function powerZone(watts, cpWatts) {
+  const ratio = watts / cpWatts;
+  return POWER_ZONES.find((zone) => ratio <= zone.max);
+}
+
+function zonePillHtml(watts, cpWatts) {
+  const zone = powerZone(watts, cpWatts);
+  return `<span class="zone-pill ${zone.className}">${zone.label}</span>`;
+}
+
+// Bande d'incertitude à l'échelle (mean ± std) avec un repère pour le
+// temps de la fenêtre retenue — bornes calculées dynamiquement à partir
+// des données reçues, jamais de plage fixe en dur.
+function computeRangeBar(predictedTimeS, meanTimeS, stdTimeS) {
+  const lo = Math.min(predictedTimeS, meanTimeS - 2 * stdTimeS);
+  const hi = Math.max(predictedTimeS, meanTimeS + 2 * stdTimeS);
+  const span = hi - lo || 1;
+  const pct = (s) => ((s - lo) / span) * 100;
+  return {
+    axisMin: formatMmSs(lo),
+    axisMax: formatMmSs(hi),
+    bandLeftPct: pct(meanTimeS - stdTimeS),
+    bandWidthPct: pct(meanTimeS + stdTimeS) - pct(meanTimeS - stdTimeS),
+    markerLeftPct: pct(predictedTimeS),
+  };
 }
 
 async function loadSegments() {
@@ -69,52 +117,167 @@ function renderWindowRows(windows) {
     .join("");
 }
 
+function renderPacingCard(pacing, cpWatts) {
+  return `
+    <article class="card">
+      <h2>Stratégie de pacing</h2>
+      <p class="big-figure">${Math.round(pacing.power_w)} W ${zonePillHtml(pacing.power_w, cpWatts)}</p>
+      <p class="card-note">
+        Puissance constante optimale, vent mis à part — un seul tronçon à pente
+        moyenne, pas un profil variable : aucun relevé pente/distance détaillé
+        n'existe au niveau segment.
+      </p>
+    </article>`;
+}
+
+function renderKomCard(kom, cpWatts) {
+  const warning = kom.power_w_extrapolated
+    ? `<p class="warn">⚠ ${kom.seconds}s hors de la plage calibrée du modèle CP — estimation moins fiable</p>`
+    : "";
+  return `
+    <article class="card">
+      <h2>KOM du segment</h2>
+      <p class="big-figure">${formatMmSs(kom.seconds)}</p>
+      <p class="card-note">
+        Puissance estimée pour toi : <strong>${Math.round(kom.power_w)} W</strong>
+        ${zonePillHtml(kom.power_w, cpWatts)}
+      </p>
+      <p class="card-note">Ton modèle CP, pas la puissance réelle du recordman.</p>
+      ${warning}
+    </article>`;
+}
+
+function renderPrCard(pr, cpWatts) {
+  if (pr === null) {
+    return `
+      <article class="card">
+        <h2>Mon PR</h2>
+        <p class="card-note">Jamais roulé ce segment.</p>
+      </article>`;
+  }
+  const effort = pr.effort;
+  const wattsHtml =
+    effort && effort.average_watts !== null
+      ? `${effort.average_watts} W ${zonePillHtml(effort.average_watts, cpWatts)}`
+      : "puissance non disponible";
+  const draftWarning =
+    effort && effort.draft_status !== "solo"
+      ? `<p class="warn">⚠ statut draft de cet effort : ${effort.draft_status} — comparaison possiblement biaisée</p>`
+      : "";
+  return `
+    <article class="card">
+      <h2>Mon PR</h2>
+      <p class="big-figure">${formatMmSs(pr.seconds)}</p>
+      <p class="card-note">${wattsHtml}</p>
+      ${draftWarning}
+    </article>`;
+}
+
+function renderUncertaintyCard(uncertainty, predictedTimeS) {
+  if (uncertainty === null) {
+    return `
+      <article class="card">
+        <h2>Avec incertitude</h2>
+        <p class="card-note">
+          Pas assez d'efforts récents proches du maximum (90 derniers jours) pour
+          estimer une distribution de forme à échantillonner.
+        </p>
+      </article>`;
+  }
+  const range = computeRangeBar(predictedTimeS, uncertainty.mean_time_s, uncertainty.std_time_s);
+  return `
+    <article class="card card--accent">
+      <h2>Avec incertitude</h2>
+      <p class="big-figure">
+        ${formatMmSs(uncertainty.mean_time_s)}
+        <span class="figure-sub">± ${uncertainty.std_time_s.toFixed(0)} s</span>
+      </p>
+      <p class="card-note">
+        CP, forme récente (${uncertainty.n_samples} tirages Monte-Carlo), vent
+        perturbé — écart-type ASSUMÉ à 20%, pas mesuré.
+      </p>
+      <div class="range-bar">
+        <div class="range-track">
+          <div class="range-band" style="left: ${range.bandLeftPct}%; width: ${range.bandWidthPct}%"></div>
+          <div class="range-mark" style="left: ${range.markerLeftPct}%"></div>
+        </div>
+        <div class="range-labels"><span>${range.axisMin}</span><span>${range.axisMax}</span></div>
+        <div class="range-callouts">
+          <span>Repère : <strong>${formatMmSs(predictedTimeS)}</strong> (fenêtre retenue)</span>
+          <span>Bande : <strong>${formatMmSs(uncertainty.mean_time_s)} ± ${uncertainty.std_time_s.toFixed(0)} s</strong> (forme actuelle)</span>
+        </div>
+      </div>
+    </article>`;
+}
+
 function renderResults(data) {
   const best = data.windows[0];
   const windKmh = Math.round(best.wind_speed_ms * 3.6);
   const tempC = Math.round(best.temperature_k - 273.15);
-
-  const uncertaintyHtml = data.uncertainty
-    ? `<p>Avec incertitude (CP, forme, vent, ${data.uncertainty.n_samples} tirages) : ` +
-      `<strong>${formatMmSs(data.uncertainty.mean_time_s)} ± ${data.uncertainty.std_time_s.toFixed(0)}s</strong></p>`
-    : `<p>Pas assez d'efforts récents proches du maximum pour estimer l'incertitude de forme.</p>`;
-
-  const prHtml = data.pr
-    ? `<p>Mon PR : ${formatMmSs(data.pr.seconds)}` +
-      (data.pr.effort
-        ? ` — ${data.pr.effort.average_watts ?? "puissance non disponible"} W` +
-          (data.pr.effort.draft_status !== "solo"
-            ? ` (⚠️ statut draft : ${data.pr.effort.draft_status})`
-            : "")
-        : "") +
-      `</p>`
-    : `<p>Mon PR : jamais roulé ce segment</p>`;
+  const cpWatts = data.calibration.cp_watts;
 
   resultsEl.innerHTML = `
-    <h2>Meilleure fenêtre : ${formatDayHour(best.time)}</h2>
-    <p>Temps prédit : <strong>${formatMmSs(best.predicted_time_s)}</strong>
-       (puissance requise, vent inclus : ${Math.round(best.required_power_w)} W)</p>
-    <p>Vent : ${windKmh} km/h du ${compassLabel(best.wind_direction_rad)} · Température : ${tempC}°C</p>
-    <p>CP=${data.calibration.cp_watts.toFixed(0)}±${data.calibration.cp_watts_std.toFixed(0)} W ·
-       CdA=${data.calibration.cda_m2.toFixed(3)} m² · Crr=${data.calibration.crr.toFixed(4)}</p>
+    <section class="hero">
+      <div class="hero-main">
+        <p class="eyebrow">Meilleure fenêtre</p>
+        <h1 class="hero-time">${formatMmSs(best.predicted_time_s)}</h1>
+        <p class="hero-sub">
+          ${formatDayHour(best.time)}
+          ${zonePillHtml(best.required_power_w, cpWatts)} ${Math.round(best.required_power_w)} W requis
+        </p>
+      </div>
+      <div class="hero-stats">
+        <div class="stat-tile">
+          <div class="compass" style="--deg: ${compassRotationDeg(best.wind_direction_rad)}deg">
+            <svg viewBox="0 0 40 40" fill="none" aria-hidden="true">
+              <circle cx="20" cy="20" r="17" stroke="var(--border)" stroke-width="1.5" />
+              <text x="20" y="7" text-anchor="middle" font-size="6" fill="var(--text-muted)" font-family="var(--font-body)">N</text>
+              <g class="needle"><path d="M20 6 L23 20 L20 17 L17 20 Z" fill="var(--accent)" /></g>
+            </svg>
+          </div>
+          <div>
+            <p class="stat-value">${windKmh} km/h</p>
+            <p class="stat-label">Vent du ${compassLabel(best.wind_direction_rad)}</p>
+          </div>
+        </div>
+        <div class="stat-tile">
+          <div>
+            <p class="stat-value">${tempC}°C</p>
+            <p class="stat-label">Température</p>
+          </div>
+        </div>
+        <div class="stat-tile mono">
+          <div>
+            <p class="stat-value">${cpWatts.toFixed(0)} ± ${data.calibration.cp_watts_std.toFixed(0)} W</p>
+            <p class="stat-label">CP · CdA ${data.calibration.cda_m2.toFixed(3)} m² · Crr ${data.calibration.crr.toFixed(4)}</p>
+          </div>
+        </div>
+      </div>
+    </section>
 
-    <h3>Stratégie de pacing (sans vent)</h3>
-    <p>${Math.round(data.pacing.power_w)} W</p>
-
-    <h3>KOM du segment</h3>
-    <p>${formatMmSs(data.kom.seconds)} — puissance estimée pour toi : ${Math.round(data.kom.power_w)} W
-       ${data.kom.power_w_extrapolated ? "⚠️ hors de la plage calibrée du modèle CP" : ""}</p>
-
-    ${prHtml}
-    ${uncertaintyHtml}
-
-    <h3>Classement des créneaux</h3>
-    <table>
-      <thead>
-        <tr><th>Créneau</th><th>Temps</th><th>Puissance</th><th>Vent</th><th>Température</th></tr>
-      </thead>
-      <tbody>${renderWindowRows(data.windows)}</tbody>
-    </table>
+    <section class="body-grid">
+      <div class="col-left">
+        ${renderPacingCard(data.pacing, cpWatts)}
+        <div class="pair">
+          ${renderKomCard(data.kom, cpWatts)}
+          ${renderPrCard(data.pr, cpWatts)}
+        </div>
+      </div>
+      <div class="col-right">
+        ${renderUncertaintyCard(data.uncertainty, best.predicted_time_s)}
+        <article class="card">
+          <h2>Classement des créneaux</h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Créneau</th><th>Temps</th><th>Puissance</th><th>Vent</th><th>Temp.</th></tr>
+              </thead>
+              <tbody>${renderWindowRows(data.windows)}</tbody>
+            </table>
+          </div>
+        </article>
+      </div>
+    </section>
   `;
   resultsEl.hidden = false;
 }
@@ -123,6 +286,7 @@ form.addEventListener("submit", async (event) => {
   event.preventDefault();
   statusEl.textContent = "Calibration et prévision météo...";
   resultsEl.hidden = true;
+  submitButton.disabled = true;
 
   try {
     const response = await fetch("/predict", {
@@ -143,6 +307,8 @@ form.addEventListener("submit", async (event) => {
     renderResults(await response.json());
   } catch (err) {
     statusEl.textContent = `Erreur réseau : ${err.message}`;
+  } finally {
+    submitButton.disabled = false;
   }
 });
 
