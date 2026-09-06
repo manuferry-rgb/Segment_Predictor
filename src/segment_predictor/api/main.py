@@ -26,6 +26,7 @@ from segment_predictor.models.power import sustainable_power_w
 from segment_predictor.models.segment import SegmentChunk, segment_chunks_from_polyline
 from segment_predictor.models.uncertainty import propagate_uncertainty
 from segment_predictor.predict.forecast_window import rank_forecast_windows_for_segment
+from segment_predictor.predict.wind_scan import scan_segments_for_today
 
 # 4 parents : main.py -> api/ -> segment_predictor/ -> src/ -> racine du
 # projet (app.py, lui, est à la racine et n'a besoin que d'un seul .parent).
@@ -322,3 +323,39 @@ def predict(request: PredictRequest) -> PredictResponse:
         pr=pr_info,
         uncertainty=uncertainty_info,
     )
+
+
+class WindOpportunity(BaseModel):
+    segment_id: int
+    segment_name: str
+    distance_m: float
+    best_hour: datetime
+    # m/s, signé (T-34) : positif = vent de dos en moyenne sur le
+    # segment, négatif = vent de face en moyenne.
+    average_tailwind_speed_ms: float
+    wind_speed_ms: float
+    wind_direction_rad: float
+
+
+@app.get("/wind-scan", response_model=list[WindOpportunity])
+def wind_scan() -> list[WindOpportunity]:
+    """Équivalent JSON de pages/1_Segments_du_jour.py (T-33/T-34) :
+    aucune calibration CP/CdA/Crr, juste la géométrie de chaque segment
+    favori contre la météo du jour. Un appel Open-Meteo par segment
+    (scan_segments_for_today) — peut prendre plusieurs secondes selon le
+    nombre de segments favoris.
+    """
+    with httpx.Client(timeout=30.0) as client:
+        opportunities = scan_segments_for_today(client, _connection)
+    return [
+        WindOpportunity(
+            segment_id=o.segment_id,
+            segment_name=o.segment_name,
+            distance_m=o.distance_m,
+            best_hour=o.best_hour,
+            average_tailwind_speed_ms=o.average_tailwind_speed_ms,
+            wind_speed_ms=o.wind_speed_ms,
+            wind_direction_rad=o.wind_direction_rad,
+        )
+        for o in opportunities
+    ]
