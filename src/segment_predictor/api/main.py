@@ -14,6 +14,7 @@ from pathlib import Path
 import duckdb
 import httpx
 from fastapi import FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from segment_predictor.calibrate.cda_crr import calibrate_cda_crr_from_db
@@ -33,6 +34,7 @@ from segment_predictor.predict.wind_scan import scan_segments_for_today
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 DUCKDB_PATH = PROJECT_ROOT / "data" / "segment_predictor.duckdb"
 CSV_PATH = PROJECT_ROOT / "annotations" / "draft_status.csv"
+WEB_DIR = PROJECT_ROOT / "web"
 
 # 300, pas 2000 (T-32, cf app.py) : chaque tirage simule TOUS les
 # tronçons du polyline, jusqu'à ~340 sur un long segment — 300 suffit à
@@ -359,3 +361,10 @@ def wind_scan() -> list[WindOpportunity]:
         )
         for o in opportunities
     ]
+
+
+# Montage APRÈS toutes les routes API ci-dessus (ordre significatif) :
+# StaticFiles(html=True) sert index.html pour "/" et toute route inconnue
+# lui est déléguée en dernier recours — monté avant /segments, /predict,
+# /wind-scan, il les masquerait puisque "/" matche tout.
+app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")
