@@ -17,8 +17,11 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from segment_predictor.calibrate.cda_crr import calibrate_cda_crr_from_db
-from segment_predictor.calibrate.draft_tagging import fit_current_cp
+from segment_predictor.calibrate.draft_tagging import fit_current_cp, load_existing_annotations
 from segment_predictor.models.draft import draft_ratio_for_preset
+from segment_predictor.models.pacing import optimize_pacing
+from segment_predictor.models.power import sustainable_power_w
+from segment_predictor.models.segment import SegmentChunk
 from segment_predictor.predict.forecast_window import rank_forecast_windows_for_segment
 
 # 4 parents : main.py -> api/ -> segment_predictor/ -> src/ -> racine du
@@ -92,12 +95,63 @@ class Window(BaseModel):
     temperature_k: float
 
 
+class PacingInfo(BaseModel):
+    """Une seule puissance, pas un profil variable (T-26 dans app.py) :
+    aucun profil pente/distance détaillé n'est stocké au niveau segment
+    (T-07b jamais fait), donc le segment est optimisé comme UN SEUL
+    tronçon à pente moyenne — "pacing" ici veut dire "la puissance
+    soutenable optimale pour ce profil simplifié", pas une vraie
+    stratégie qui varierait dans le segment."""
+
+    power_w: float
+
+
+class KomInfo(BaseModel):
+    seconds: int
+    # Puissance estimée par TON modèle CP pour TENIR ce temps — pas la
+    # puissance réelle du recordman (Strava ne la fournit pas).
+    power_w: float
+    # True si `seconds` tombe hors de la plage de durées sur laquelle
+    # CP/W' ont été calibrés (fit_current_cp) — extrapolation, donc moins
+    # fiable, signalé plutôt que présenté comme aussi sûr que dans la
+    # plage calibrée.
+    power_w_extrapolated: bool
+
+
+class PrEffortInfo(BaseModel):
+    activity_id: int
+    start_date: datetime
+    average_watts: float | None
+    # False si average_watts n'est pas confirmé par un capteur de
+    # puissance (ex. estimé par Strava depuis la vitesse) — None si
+    # average_watts lui-même est absent (pas de capteur du tout ce
+    # jour-là, T-07b).
+    sensor_confirmed: bool | None
+    # "solo" / "roue_collee" / "un_metre" / "groupe" / "unknown" (T-16) —
+    # un PR obtenu dans une roue serait plus rapide qu'un effort solo à
+    # puissance égale, la comparaison peut être biaisée si != "solo".
+    draft_status: str
+
+
+class PrInfo(BaseModel):
+    seconds: int
+    # None si l'effort correspondant n'a pas été retrouvé dans
+    # segment_efforts (ne devrait pas arriver en usage normal, mais
+    # possible si la base a été partiellement reconstruite).
+    effort: PrEffortInfo | None
+
+
 class PredictResponse(BaseModel):
     calibration: CalibrationInfo
     # windows[0] EST la meilleure fenêtre (rank_forecast_windows_for_segment
     # renvoie déjà trié par temps croissant, T-27) — pas de champ "best"
     # séparé qui dupliquerait windows[0], c'est au frontend de le savoir.
     windows: list[Window]
+    pacing: PacingInfo
+    kom: KomInfo
+    # None si jamais roulé ce segment (pr_seconds NULL en base) — pas une
+    # erreur, un fait normal pour un segment jamais tenté.
+    pr: PrInfo | None
 
 
 # def, pas async def (nouveau concept) : le corps fait de l'I/O bloquant
@@ -138,6 +192,57 @@ def predict(request: PredictRequest) -> PredictResponse:
             detail="Aucun créneau exploitable sur les 10 prochains jours (6h-21h).",
         )
 
+    # Un seul tronçon (comme app.py, T-26) : optimize_pacing simule à
+    # vent nul, donc un cap unique ne change rien à son résultat — pas la
+    # peine d'y payer le coût du découpage par polyline (T-32) pour zéro
+    # différence.
+    distance_m, average_grade, heading_rad, kom_seconds, pr_seconds = _connection.execute(
+        "SELECT distance_m, average_grade, heading_rad, kom_seconds, pr_seconds "
+        "FROM segments WHERE id = ?",
+        [request.segment_id],
+    ).fetchone()
+    chunk = SegmentChunk(0.0, distance_m, average_grade, heading_rad)
+    pacing_result = optimize_pacing(
+        [chunk],
+        cp_fit.cp_watts,
+        cp_fit.w_prime_joules,
+        request.mass_kg,
+        effective_cda_m2,
+        cda_crr_fit.crr,
+    )
+
+    kom_power_w = sustainable_power_w(cp_fit.cp_watts, cp_fit.w_prime_joules, kom_seconds)
+    duration_min_s, duration_max_s = cp_fit.duration_range_s
+    kom_info = KomInfo(
+        seconds=kom_seconds,
+        power_w=kom_power_w,
+        power_w_extrapolated=not duration_min_s <= kom_seconds <= duration_max_s,
+    )
+
+    pr_info = None
+    if pr_seconds is not None:
+        # Retrouvé par (segment_id, elapsed_time_s) : segments.pr_seconds
+        # ne porte pas l'id de l'effort correspondant, pas de jointure
+        # directe possible (même limite que app.py).
+        pr_effort_row = _connection.execute(
+            "SELECT id, average_watts, device_watts, start_date, activity_id "
+            "FROM segment_efforts WHERE segment_id = ? AND elapsed_time_s = ? "
+            "ORDER BY start_date DESC LIMIT 1",
+            [request.segment_id, pr_seconds],
+        ).fetchone()
+        effort_info = None
+        if pr_effort_row is not None:
+            pr_effort_id, average_watts, device_watts, start_date, activity_id = pr_effort_row
+            draft_status = load_existing_annotations(CSV_PATH).get(pr_effort_id, "unknown")
+            effort_info = PrEffortInfo(
+                activity_id=activity_id,
+                start_date=start_date,
+                average_watts=average_watts,
+                sensor_confirmed=bool(device_watts) if average_watts is not None else None,
+                draft_status=draft_status,
+            )
+        pr_info = PrInfo(seconds=pr_seconds, effort=effort_info)
+
     return PredictResponse(
         calibration=CalibrationInfo(
             cp_watts=cp_fit.cp_watts,
@@ -156,4 +261,7 @@ def predict(request: PredictRequest) -> PredictResponse:
             )
             for w in windows
         ],
+        pacing=PacingInfo(power_w=pacing_result.power_profile_w[0]),
+        kom=kom_info,
+        pr=pr_info,
     )
