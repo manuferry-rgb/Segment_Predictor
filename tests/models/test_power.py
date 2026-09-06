@@ -11,6 +11,7 @@ import pytest
 
 from segment_predictor.models.power import (
     fit_critical_power,
+    interpolate_mmp_curve,
     mean_maximal_power,
     mean_maximal_power_curve,
     normalized_power,
@@ -399,3 +400,47 @@ def test_tss_scales_with_square_of_intensity_factor() -> None:
 def test_tss_raises_for_nonpositive_threshold_power() -> None:
     with pytest.raises(ValueError, match="threshold_power_w"):
         training_stress_score(3600.0, 250.0, 0.0)
+
+
+# ---- interpolate_mmp_curve (T-42a) -------------------------------------------------------------
+
+
+def test_interpolate_mmp_curve_matches_known_point_exactly() -> None:
+    curve = {180: 400.0, 600: 350.0, 1200: 320.0}
+    assert interpolate_mmp_curve(curve, 600) == pytest.approx(350.0)
+
+
+def test_interpolate_mmp_curve_interpolates_linearly_between_two_points() -> None:
+    # Milieu exact entre 100s (300W) et 200s (200W) : 150s -> 250W par
+    # interpolation linéaire, pas la formule CP+W' (courbe RÉELLE mesurée,
+    # pas un modèle lissé — voir docstring).
+    curve = {100: 300.0, 200: 200.0}
+    assert interpolate_mmp_curve(curve, 150) == pytest.approx(250.0)
+
+
+def test_interpolate_mmp_curve_raises_below_measured_range() -> None:
+    curve = {180: 400.0, 1200: 320.0}
+    with pytest.raises(ValueError, match="hors de la plage"):
+        interpolate_mmp_curve(curve, 60)
+
+
+def test_interpolate_mmp_curve_raises_above_measured_range() -> None:
+    curve = {180: 400.0, 1200: 320.0}
+    with pytest.raises(ValueError, match="hors de la plage"):
+        interpolate_mmp_curve(curve, 1800)
+
+
+def test_interpolate_mmp_curve_ignores_nan_points() -> None:
+    # 60s est NaN (activité jamais assez longue, compute_aggregate_mmp_curve) :
+    # la plage valide est [180, 1200], pas [60, 1200] — 90s doit donc lever,
+    # pas être silencieusement interpolé entre le NaN et 180s.
+    curve = {60: float("nan"), 180: 400.0, 1200: 320.0}
+    with pytest.raises(ValueError, match="hors de la plage"):
+        interpolate_mmp_curve(curve, 90)
+    assert interpolate_mmp_curve(curve, 180) == pytest.approx(400.0)
+
+
+def test_interpolate_mmp_curve_raises_with_fewer_than_two_valid_points() -> None:
+    curve = {180: 400.0, 600: float("nan")}
+    with pytest.raises(ValueError, match="au moins 2"):
+        interpolate_mmp_curve(curve, 180)

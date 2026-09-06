@@ -7,6 +7,7 @@ entre le stream brut Strava (paires (t_s, watts) à résolution variable
 `resample_to_uniform_seconds`.
 """
 
+import math
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -265,6 +266,45 @@ def fit_critical_power(
         cp_watts_std=cp_watts_std,
         w_prime_joules_std=w_prime_joules_std,
     )
+
+
+def interpolate_mmp_curve(mmp_curve: dict[int, float], target_duration_s: float) -> float:
+    """Lecture directe de la courbe MMP RÉELLE (mesurée, `compute_aggregate_
+    mmp_curve`) à `target_duration_s`, par interpolation linéaire entre les
+    deux durées connues encadrantes.
+
+    Différence avec `sustainable_power_w` (T-42) : ce n'est pas le modèle
+    CP+W' (lissé, extrapolable à n'importe quelle durée), mais les points
+    RÉELLEMENT atteints par l'athlète — pas de courbe ajustée entre eux,
+    juste une droite reliant deux performances mesurées. En dehors de
+    l'intervalle couvert par `mmp_curve`, il n'y a rien à lire : ValueError
+    explicite plutôt qu'une extrapolation inventée (contrairement au modèle
+    CP, qui lui répond à toute durée, moins fiable hors de sa plage
+    calibrée).
+
+    Durées à NaN (`compute_aggregate_mmp_curve`, activité jamais assez
+    longue pour cette durée) : exclues avant de déterminer la plage valide,
+    pas juste ignorées lors de l'interpolation elle-même — sinon une durée
+    hors plage réelle pourrait sembler interpolable entre un NaN voisin et
+    un point valide.
+    """
+    valid = {duration: watts for duration, watts in mmp_curve.items() if not math.isnan(watts)}
+    if len(valid) < 2:
+        raise ValueError(
+            f"seulement {len(valid)} point(s) valide(s) dans la courbe MMP : "
+            "il en faut au moins 2 pour interpoler"
+        )
+
+    durations_s = np.array(sorted(valid))
+    watts = np.array([valid[d] for d in durations_s])
+
+    if not durations_s[0] <= target_duration_s <= durations_s[-1]:
+        raise ValueError(
+            f"{target_duration_s:.0f}s hors de la plage mesurée de la courbe MMP "
+            f"[{durations_s[0]:.0f}, {durations_s[-1]:.0f}]s — pas d'extrapolation"
+        )
+
+    return float(np.interp(target_duration_s, durations_s, watts))
 
 
 def sustainable_power_w(cp_watts: float, w_prime_joules: float, duration_s: float) -> float:
