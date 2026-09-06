@@ -247,3 +247,62 @@ moyenne > 0" dans `pages/1_Segments_du_jour.py`.
 *Critère de fin* : la colonne "Vent favorable" affiche un km/h signé
 (ex. "+17 km/h"), le tri et le seuil "favorable" utilisent cette même
 valeur.
+
+---
+
+## Phase 11 — Migration Streamlit -> FastAPI + HTML/CSS/JS
+
+Streamlit dessine tout côté Python : aucun contrôle sur le DOM, la mise
+en page ou les micro-interactions, ce qui plafonne le rendu visuel très
+en dessous d'une vraie web app "pro". Migration vers une API JSON
+(FastAPI) consommée par une page HTML/CSS/JS statique (vanilla, sans
+framework ni build step). Streamlit (`app.py`, `pages/`) reste en place
+et fonctionnel jusqu'à T-40 inclus ; supprimé à T-41 une fois
+l'équivalence fonctionnelle validée.
+
+**T-36 — Squelette FastAPI + `GET /segments`**
+Application FastAPI minimale (`src/segment_predictor/api/`), servie par
+`uvicorn`. Un seul endpoint pour commencer : liste des segments
+(id, nom, distance, D+) depuis DuckDB — assemble `storage/segments.py`,
+aucune nouvelle logique.
+*Critère de fin* : `uvicorn segment_predictor.api.main:app` répond en
+JSON sur `/segments`.
+
+**T-37 — Endpoint `POST /predict`**
+Porte la logique de `app.py` (T-29) en backend pur : calibration
+CP/CdA/Crr, classement des fenêtres sur 10 jours, pacing, comparaison
+KOM/PR, incertitude. Découpé en sous-étapes si besoin (fenêtres
+d'abord, pacing/KOM/PR/incertitude ensuite). Zéro rendu — uniquement
+des structures sérialisées en JSON.
+*Critère de fin* : la même réponse (aux arrondis d'affichage près)
+qu'obtiendrait `app.py` pour un même segment/scénario/poids.
+
+**T-38 — Endpoint `GET /wind-scan`**
+Porte `pages/1_Segments_du_jour.py` (T-33/T-34) : scan des segments
+favoris pour la météo du jour, sans calibration.
+*Critère de fin* : équivalent JSON du tableau actuel de "Segments du
+jour".
+
+**T-39 — Page HTML/CSS/JS "Kompass"**
+`web/index.html` + `app.js` + `style.css`, servis statiquement par
+FastAPI (`StaticFiles`). Reproduit le flux de la page principale
+(sélection segment/scénario/poids -> `fetch('/predict')` -> affichage)
+sans polish visuel — on valide la mécanique avant le design.
+*Critère de fin* : utilisable de bout en bout dans un navigateur, sans
+Python visible côté rendu.
+
+**T-40 — Design system**
+Reprise visuelle complète une fois T-39 fonctionnel : typographie,
+grille, cartes, palette, micro-animations. C'est cette étape qui
+répond au "plus moderne, plus design, plus pro" — les précédentes ne
+posent que la mécanique.
+*Critère de fin* : rendu jugé "pro" par l'auteur, cohérent sur les deux
+pages.
+
+**T-41 — Page "Segments du jour" + suppression de Streamlit**
+Deuxième page statique (même traitement que T-39/T-40) branchée sur
+`/wind-scan`. Une fois les deux pages validées comme équivalentes à
+Streamlit, suppression de `app.py`, `pages/`, `.streamlit/` et de la
+dépendance `streamlit`.
+*Critère de fin* : Streamlit n'est plus une dépendance du projet,
+`uv run pytest` et `uv run ruff check .` passent toujours.

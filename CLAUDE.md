@@ -62,7 +62,10 @@ Je dois pouvoir expliquer chaque ligne en entretien.
 - `httpx` pour les appels API, `pydantic` pour la validation des schémas
 - `numpy` / `scipy` pour la physique et l'optimisation
 - `pytest` pour les tests, `ruff` pour le lint et le format
-- Streamlit pour l'interface (phase tardive uniquement)
+- `fastapi` + `uvicorn` pour l'API HTTP, HTML/CSS/JS vanilla (sans framework
+  ni build step) pour l'interface — migration depuis Streamlit (T-36 à T-41),
+  jugé trop limité visuellement pour un rendu "pro" (peu de contrôle sur le
+  DOM et la mise en page)
 - GitHub Actions pour la CI
 
 ## Structure
@@ -80,6 +83,8 @@ src/segment_predictor/
     form.py      # indice de performance du jour
   calibrate/     # estimation de CdA, Crr, CP, W' sur données historiques
   predict/       # orchestration : segment + météo + forme -> temps prédit
+  api/           # endpoints FastAPI, assemble ce qui existe déjà en JSON
+web/             # HTML/CSS/JS statique servi par l'API, aucune logique métier
 tests/
 notebooks/       # exploration uniquement, jamais de logique métier ici
 ```
@@ -87,6 +92,9 @@ notebooks/       # exploration uniquement, jamais de logique métier ici
 Règle d'architecture : la couche `ingest` ne transforme rien.
 La couche `models` ne fait aucun I/O — elle prend des structures en entrée
 et retourne des structures. C'est ce qui la rend testable.
+La couche `api/` a le même rôle que `app.py` avant elle (T-29) : elle
+assemble des fonctions déjà testées ailleurs et ne contient aucune
+logique métier nouvelle — juste de la sérialisation JSON et du câblage.
 
 ## Commandes
 
