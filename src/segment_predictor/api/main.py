@@ -18,10 +18,13 @@ from pydantic import BaseModel
 
 from segment_predictor.calibrate.cda_crr import calibrate_cda_crr_from_db
 from segment_predictor.calibrate.draft_tagging import fit_current_cp, load_existing_annotations
+from segment_predictor.calibrate.form import recent_performance_index_values
 from segment_predictor.models.draft import draft_ratio_for_preset
 from segment_predictor.models.pacing import optimize_pacing
+from segment_predictor.models.polyline import decode_polyline
 from segment_predictor.models.power import sustainable_power_w
-from segment_predictor.models.segment import SegmentChunk
+from segment_predictor.models.segment import SegmentChunk, segment_chunks_from_polyline
+from segment_predictor.models.uncertainty import propagate_uncertainty
 from segment_predictor.predict.forecast_window import rank_forecast_windows_for_segment
 
 # 4 parents : main.py -> api/ -> segment_predictor/ -> src/ -> racine du
@@ -29,6 +32,15 @@ from segment_predictor.predict.forecast_window import rank_forecast_windows_for_
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 DUCKDB_PATH = PROJECT_ROOT / "data" / "segment_predictor.duckdb"
 CSV_PATH = PROJECT_ROOT / "annotations" / "draft_status.csv"
+
+# 300, pas 2000 (T-32, cf app.py) : chaque tirage simule TOUS les
+# tronçons du polyline, jusqu'à ~340 sur un long segment — 300 suffit à
+# stabiliser moyenne et écart-type (mesuré : <1s d'écart contre 2000
+# tirages), pour un temps de calcul très inférieur.
+N_MONTE_CARLO_SAMPLES = 300
+# Hypothèse ASSUMÉE, pas mesurée (T-28) : pas d'historique
+# prévision-vs-réalisé disponible pour la calibrer.
+WIND_RELATIVE_STD = 0.20
 
 app = FastAPI(title="Kompass API")
 
@@ -141,6 +153,17 @@ class PrInfo(BaseModel):
     effort: PrEffortInfo | None
 
 
+class UncertaintyInfo(BaseModel):
+    """Sur la meilleure fenêtre (windows[0]) uniquement — recalculer pour
+    chaque créneau du classement coûterait cher (Monte-Carlo) pour un
+    intérêt marginal, même choix que app.py."""
+
+    mean_time_s: float
+    std_time_s: float
+    n_samples: int
+    n_excluded: int
+
+
 class PredictResponse(BaseModel):
     calibration: CalibrationInfo
     # windows[0] EST la meilleure fenêtre (rank_forecast_windows_for_segment
@@ -152,6 +175,9 @@ class PredictResponse(BaseModel):
     # None si jamais roulé ce segment (pr_seconds NULL en base) — pas une
     # erreur, un fait normal pour un segment jamais tenté.
     pr: PrInfo | None
+    # None si pas assez d'efforts proches du maximum dans les 90 derniers
+    # jours (T-23) pour estimer une distribution de forme à échantillonner.
+    uncertainty: UncertaintyInfo | None
 
 
 # def, pas async def (nouveau concept) : le corps fait de l'I/O bloquant
@@ -196,8 +222,8 @@ def predict(request: PredictRequest) -> PredictResponse:
     # vent nul, donc un cap unique ne change rien à son résultat — pas la
     # peine d'y payer le coût du découpage par polyline (T-32) pour zéro
     # différence.
-    distance_m, average_grade, heading_rad, kom_seconds, pr_seconds = _connection.execute(
-        "SELECT distance_m, average_grade, heading_rad, kom_seconds, pr_seconds "
+    distance_m, average_grade, heading_rad, polyline, kom_seconds, pr_seconds = _connection.execute(
+        "SELECT distance_m, average_grade, heading_rad, polyline, kom_seconds, pr_seconds "
         "FROM segments WHERE id = ?",
         [request.segment_id],
     ).fetchone()
@@ -243,6 +269,36 @@ def predict(request: PredictRequest) -> PredictResponse:
             )
         pr_info = PrInfo(seconds=pr_seconds, effort=effort_info)
 
+    # Incertitude (T-28) : cap réel par tronçon (T-32), pas le chunk
+    # unique du pacing ci-dessus — le vent compte ici, un cap moyen
+    # unique le fausserait (voir HBFH, T-32).
+    performance_index_samples = recent_performance_index_values(_connection, cp_fit=cp_fit)
+    uncertainty_info = None
+    if performance_index_samples:
+        best = windows[0]
+        chunks = segment_chunks_from_polyline(decode_polyline(polyline), average_grade)
+        uncertainty_result = propagate_uncertainty(
+            chunks,
+            cp_watts=cp_fit.cp_watts,
+            cp_watts_std=cp_fit.cp_watts_std,
+            w_prime_joules=cp_fit.w_prime_joules,
+            w_prime_joules_std=cp_fit.w_prime_joules_std,
+            mass_kg=request.mass_kg,
+            cda_m2=effective_cda_m2,
+            crr=cda_crr_fit.crr,
+            performance_index_samples=performance_index_samples,
+            wind_speed_ms=best.wind_speed_ms,
+            wind_direction_rad=best.wind_direction_rad,
+            wind_relative_std=WIND_RELATIVE_STD,
+            n_samples=N_MONTE_CARLO_SAMPLES,
+        )
+        uncertainty_info = UncertaintyInfo(
+            mean_time_s=uncertainty_result.mean_time_s,
+            std_time_s=uncertainty_result.std_time_s,
+            n_samples=uncertainty_result.n_samples,
+            n_excluded=uncertainty_result.n_excluded,
+        )
+
     return PredictResponse(
         calibration=CalibrationInfo(
             cp_watts=cp_fit.cp_watts,
@@ -264,4 +320,5 @@ def predict(request: PredictRequest) -> PredictResponse:
         pacing=PacingInfo(power_w=pacing_result.power_profile_w[0]),
         kom=kom_info,
         pr=pr_info,
+        uncertainty=uncertainty_info,
     )
