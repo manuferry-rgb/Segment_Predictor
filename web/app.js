@@ -132,7 +132,7 @@ function renderPacingCard(pacing, cpWatts) {
 
 function renderKomCard(kom, cpWatts) {
   const warning = kom.power_w_extrapolated
-    ? `<p class="warn">⚠ ${kom.seconds}s hors de la plage calibrée du modèle CP — estimation moins fiable</p>`
+    ? `<p class="warn">⚠ ${kom.seconds}s hors de la plage calibrée du modèle de puissance seuil — estimation moins fiable</p>`
     : "";
   return `
     <article class="card">
@@ -142,7 +142,7 @@ function renderKomCard(kom, cpWatts) {
         Puissance estimée pour toi : <strong>${Math.round(kom.power_w)} W</strong>
         ${zonePillHtml(kom.power_w, cpWatts)}
       </p>
-      <p class="card-note">Ton modèle CP, pas la puissance réelle du recordman.</p>
+      <p class="card-note">Ton modèle de puissance seuil, pas la puissance réelle du recordman.</p>
       ${warning}
     </article>`;
 }
@@ -193,7 +193,7 @@ function renderUncertaintyCard(uncertainty, predictedTimeS) {
         <span class="figure-sub">± ${uncertainty.std_time_s.toFixed(0)} s</span>
       </p>
       <p class="card-note">
-        CP, forme récente (${uncertainty.n_samples} tirages Monte-Carlo), vent
+        Puissance seuil, forme récente (${uncertainty.n_samples} tirages Monte-Carlo), vent
         perturbé — écart-type ASSUMÉ à 20%, pas mesuré.
       </p>
       <div class="range-bar">
@@ -267,7 +267,7 @@ function renderResults(data) {
         <div class="stat-tile mono">
           <div>
             <p class="stat-value">${cpWatts.toFixed(0)} ± ${data.calibration.cp_watts_std.toFixed(0)} W</p>
-            <p class="stat-label">CP · CdA ${data.calibration.cda_m2.toFixed(3)} m² · Crr ${data.calibration.crr.toFixed(4)}</p>
+            <p class="stat-label">Puissance seuil · CdA ${data.calibration.cda_m2.toFixed(3)} m² · Crr ${data.calibration.crr.toFixed(4)}</p>
           </div>
         </div>
       </div>
