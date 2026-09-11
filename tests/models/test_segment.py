@@ -16,6 +16,7 @@ from segment_predictor.models.segment import (
     STANDARD_AIR_DENSITY_KG_M3,
     SegmentChunk,
     average_tailwind_speed_ms,
+    average_wind_alignment_pct,
     bearing_rad,
     chunk_segment,
     haversine_distance_m,
@@ -332,6 +333,51 @@ def test_average_tailwind_speed_is_zero_with_no_wind() -> None:
 def test_average_tailwind_speed_raises_on_empty_chunks() -> None:
     with pytest.raises(ValueError, match="chunks vide"):
         average_tailwind_speed_ms([], wind_speed_ms=5.0, wind_direction_rad=0.0)
+
+
+# ---- average_wind_alignment_pct (T-43) -----------------------------------------------------
+# Même pondération par longueur que average_tailwind_speed_ms (T-34), mais
+# PURE orientation : pas de wind_speed_ms en paramètre, le résultat ne
+# dépend que du tracé et de la direction du vent — répond à "quelle
+# fraction d'un vent, si j'en avais, serait dans le bon sens ici ?", pas
+# "quelle vitesse de vent de dos j'ai aujourd'hui" (déjà average_tailwind_
+# speed_ms). +100 = vent de dos pur, -100 = vent de face pur, 0 = travers pur.
+
+
+def test_wind_alignment_is_100_for_a_straight_segment_with_a_pure_tailwind() -> None:
+    # Exemple de l'énoncé (T-43) : segment plein est, vent qui vient de
+    # l'ouest (donc de dos sur tout le trajet) -> 100%.
+    chunks = [SegmentChunk(0.0, 1000.0, 0.0, heading_rad=math.pi / 2)]  # cap plein est
+    wind_from_west_rad = 3 * math.pi / 2
+    assert average_wind_alignment_pct(chunks, wind_from_west_rad) == pytest.approx(100.0)
+
+
+def test_wind_alignment_is_minus_100_for_a_pure_headwind() -> None:
+    chunks = [SegmentChunk(0.0, 100.0, 0.0, heading_rad=0.0)]  # cap plein nord
+    assert average_wind_alignment_pct(chunks, wind_direction_rad=0.0) == pytest.approx(-100.0)
+
+
+def test_wind_alignment_is_near_zero_for_a_pure_crosswind() -> None:
+    chunks = [SegmentChunk(0.0, 100.0, 0.0, heading_rad=0.0)]  # cap plein nord
+    assert average_wind_alignment_pct(
+        chunks, wind_direction_rad=math.pi / 2
+    ) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_wind_alignment_is_weighted_by_chunk_length_not_chunk_count() -> None:
+    """700m face (cap nord, vent du nord) + 300m dos : moyenne pondérée =
+    (700*(-100) + 300*(+100)) / 1000 = -40%. Calculé à la main, pas dérivé
+    du code testé (même principe que le test analogue de T-34)."""
+    chunks = [
+        SegmentChunk(0.0, 700.0, 0.0, heading_rad=0.0),  # face, majoritaire
+        SegmentChunk(700.0, 300.0, 0.0, heading_rad=math.pi),  # dos, minoritaire
+    ]
+    assert average_wind_alignment_pct(chunks, wind_direction_rad=0.0) == pytest.approx(-40.0)
+
+
+def test_wind_alignment_raises_on_empty_chunks() -> None:
+    with pytest.raises(ValueError, match="chunks vide"):
+        average_wind_alignment_pct([], wind_direction_rad=0.0)
 
 
 # ---- simulate_segment_time (T-13) --------------------------------------------------------

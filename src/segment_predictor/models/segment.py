@@ -270,6 +270,39 @@ def average_tailwind_speed_ms(
     return -weighted_headwind_ms / total_length_m
 
 
+def average_wind_alignment_pct(chunks: list[SegmentChunk], wind_direction_rad: float) -> float:
+    """Alignement PUR entre le tracé et la direction du vent, pondéré par
+    la longueur de chaque tronçon (T-43) — même pondération que
+    `average_tailwind_speed_ms` (T-34), mais sans `wind_speed_ms` : le
+    résultat ne dépend que de la GÉOMÉTRIE (tracé + direction du vent),
+    pas de sa force. Répond à "quelle fraction d'un vent, si j'en avais,
+    serait dans le bon sens sur ce tracé ?", une question différente de
+    "quelle vitesse de vent de dos j'ai aujourd'hui" (déjà
+    `average_tailwind_speed_ms`) — les deux se complètent, aucune ne
+    remplace l'autre (voir T-34 : un % seul avait déjà été abandonné une
+    fois comme critère de CLASSEMENT, car il ne distingue pas 2 km/h de
+    20 km/h de vent bien aligné — ce %-ci sert à AFFICHER l'alignement,
+    pas à classer).
+
+    +100 = vent de dos pur sur tout le tracé, -100 = vent de face pur,
+    0 = vent de travers pur (en moyenne pondérée).
+    """
+    if not chunks:
+        raise ValueError("chunks vide : rien à évaluer")
+
+    total_length_m = sum(chunk.length_m for chunk in chunks)
+    # -cos(...) : même signe que average_tailwind_speed_ms (positif = vent
+    # de dos), en tirant `wind_speed_ms` de effective_headwind_speed_ms
+    # (fixé à 1.0, pure projection angulaire) plutôt qu'en dupliquant le
+    # cos() séparément.
+    weighted_alignment = sum(
+        chunk.length_m
+        * -effective_headwind_speed_ms(1.0, wind_direction_rad, chunk.heading_rad)
+        for chunk in chunks
+    )
+    return (weighted_alignment / total_length_m) * 100.0
+
+
 def _simulate_at_constant_power(
     chunks: list[SegmentChunk],
     power_w: float,
