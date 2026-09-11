@@ -396,6 +396,10 @@ class WindOpportunity(BaseModel):
     average_tailwind_speed_ms: float
     wind_speed_ms: float
     wind_direction_rad: float
+    # % PUR d'alignement tracé/vent (T-43), indépendant de la force du
+    # vent — complète average_tailwind_speed_ms, ne remplace pas le
+    # classement (toujours par vitesse réelle ci-dessus).
+    wind_alignment_pct: float
 
 
 @app.get("/wind-scan", response_model=list[WindOpportunity])
@@ -417,6 +421,7 @@ def wind_scan() -> list[WindOpportunity]:
             average_tailwind_speed_ms=o.average_tailwind_speed_ms,
             wind_speed_ms=o.wind_speed_ms,
             wind_direction_rad=o.wind_direction_rad,
+            wind_alignment_pct=o.wind_alignment_pct,
         )
         for o in opportunities
     ]

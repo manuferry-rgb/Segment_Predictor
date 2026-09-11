@@ -23,6 +23,7 @@ from segment_predictor.models.polyline import decode_polyline
 from segment_predictor.models.segment import (
     SegmentChunk,
     average_tailwind_speed_ms,
+    average_wind_alignment_pct,
     segment_chunks_from_polyline,
 )
 from segment_predictor.predict.forecast_window import extract_hourly_slot
@@ -44,6 +45,11 @@ class SegmentWindOpportunity:
     average_tailwind_speed_ms: float
     wind_speed_ms: float
     wind_direction_rad: float
+    # % PUR d'alignement tracé/vent, indépendant de la force du vent
+    # (T-43, average_wind_alignment_pct) — complète average_tailwind_
+    # speed_ms, ne remplace pas le critère de CLASSEMENT (toujours la
+    # vitesse réelle ci-dessus, voir docstring de average_wind_alignment_pct).
+    wind_alignment_pct: float
 
 
 def best_wind_opportunity_today(
@@ -86,6 +92,7 @@ def best_wind_opportunity_today(
                 average_tailwind_speed_ms=tailwind_ms,
                 wind_speed_ms=wind_speed_ms,
                 wind_direction_rad=wind_direction_rad,
+                wind_alignment_pct=average_wind_alignment_pct(chunks, wind_direction_rad),
             )
 
     return best

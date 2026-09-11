@@ -50,6 +50,9 @@ def test_best_wind_opportunity_today_picks_the_most_favorable_hour() -> None:
     assert result is not None
     assert result.best_hour.hour == 14
     assert result.average_tailwind_speed_ms == pytest.approx(_20KMH_IN_MS)
+    # Vent de dos pur (cap nord, vent du sud) -> 100% (T-43), indépendant
+    # des 20 km/h ci-dessus (average_wind_alignment_pct n'en dépend pas).
+    assert result.wind_alignment_pct == pytest.approx(100.0)
     assert result.segment_id == 1
     assert result.segment_name == "Test"
     assert result.distance_m == 2000.0
