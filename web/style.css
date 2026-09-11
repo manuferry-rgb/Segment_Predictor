@@ -145,7 +145,12 @@ h1, h2 { text-wrap: balance; margin: 0; }
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
+  /* .tab habille aussi bien un <span> (onglet actif, pas cliquable) qu'un
+     <a> (onglet vers l'autre page) — reset des styles de lien par défaut. */
+  text-decoration: none;
 }
+
+.tab:hover { color: var(--text); }
 
 .tab--active {
   background: var(--surface-2);
@@ -175,6 +180,11 @@ h1, h2 { text-wrap: balance; margin: 0; }
   padding: 1.1rem;
   margin: 0;
 }
+
+/* segments-du-jour.html réutilise .controlbar pour un texte + un bouton,
+   pas des <select>/<input> — le texte doit pouvoir prendre toute la
+   largeur disponible plutôt que se coller au bouton. */
+.controlbar-note { flex: 1 1 320px; margin: 0; color: var(--text-muted); font-size: 0.85rem; }
 
 .field { display: flex; flex-direction: column; gap: 0.35rem; flex: 1 1 200px; }
 
@@ -470,3 +480,12 @@ td {
 tbody tr:first-child { background: color-mix(in srgb, var(--accent) 8%, transparent); }
 tbody tr:first-child td { font-weight: 600; }
 tbody tr:last-child td { border-bottom: none; }
+
+/* Lignes cliquables (segments-du-jour.js, T-43) : jusqu'ici .row-clickable
+   coexiste avec le highlight de première ligne ci-dessus (la meilleure
+   ligne reste dorée ET cliquable). */
+tbody tr.row-clickable { cursor: pointer; }
+tbody tr.row-clickable:hover { background: var(--surface-2); }
+tbody tr.row-clickable:first-child:hover {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}

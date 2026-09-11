@@ -99,6 +99,15 @@ async function loadSegments() {
     option.textContent = `${segment.name} (${km} km, D+ ${Math.round(segment.elevation_gain_m)} m)`;
     segmentSelect.appendChild(option);
   }
+
+  // Pré-sélection venant de "Segments du jour" (clic sur une ligne, T-43) :
+  // ?segment=<id> dans l'URL plutôt qu'un état serveur (st.session_state
+  // côté Streamlit, T-35) — deux pages statiques indépendantes n'ont pas
+  // de session partagée, l'URL est le seul canal entre les deux.
+  const preselectedId = new URLSearchParams(window.location.search).get("segment");
+  if (preselectedId !== null) {
+    segmentSelect.value = preselectedId; // no-op si l'id n'existe pas parmi les options
+  }
 }
 
 function renderWindowRows(windows) {

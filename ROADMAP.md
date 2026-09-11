@@ -337,3 +337,26 @@ avec le vent de cette fenêtre, quel temps ça donnerait ?"
 [3, 20] min, un second chiffre "avec ta courbe mesurée" apparaît à côté
 du temps prédit ; en dehors, un message explique pourquoi plutôt qu'un
 silence ou un crash.
+
+---
+
+## Phase 13 — % d'alignement vent/tracé, et la page "Segments du jour" manquante
+
+**T-43 — Top segments du jour avec % d'alignement, page web/segments-du-jour.html**
+`average_tailwind_speed_ms` (T-34) donne une vraie vitesse (km/h) mais
+pas d'intuition directe sur l'ORIENTATION seule. Ajoute
+`average_wind_alignment_pct` (models/segment.py) : même pondération par
+longueur, mais indépendant de la force du vent — +100% vent de dos pur,
+-100% vent de face pur. Affiché à CÔTÉ du classement réel (km/h), ne le
+remplace pas (T-34 avait déjà abandonné un % seul comme critère de tri).
+
+Complète aussi la moitié "page" de T-41 (jamais faite) :
+`web/segments-du-jour.html` + `.js`, même design system que T-40, top
+10 cliquable (redirige vers `index.html?segment=<id>`, remplace le
+`st.session_state` de T-35 par un paramètre d'URL — deux pages
+statiques indépendantes n'ont pas de session partagée). La suppression
+de Streamlit (l'autre moitié de T-41) reste à faire séparément.
+*Critère de fin* : `GET /wind-scan` expose `wind_alignment_pct` ; la
+page affiche le top 10 trié par vent favorable réel, avec le %
+d'alignement en colonne, clic sur une ligne -> segment présélectionné
+dans Kompass. Vérifié en vrai contre les 78 segments favoris.

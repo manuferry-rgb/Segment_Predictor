@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Kompass — Segments du jour</title>
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700;800&family=Archivo:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div class="page">
+      <header class="topbar">
+        <div class="brand">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <circle cx="12" cy="12" r="10" stroke="var(--accent)" stroke-width="1.6" />
+            <path d="M15.5 8.5 L11 11 L8.5 15.5 L13 13 Z" fill="var(--accent)" />
+          </svg>
+          Kompass
+        </div>
+        <nav class="tabs">
+          <a class="tab" href="index.html">Segment</a>
+          <span class="tab tab--active">Segments du jour</span>
+        </nav>
+      </header>
+
+      <!-- T-33/T-34 (question géométrique pure, sans calibration) + T-43
+           (% d'alignement) : parmi tes segments favoris, lesquels ont le
+           vent dans le bon sens aujourd'hui ? Scan manuel (bouton), pas
+           automatique : un appel météo par segment favori (~78 chez toi),
+           pas déclenché à chaque chargement de page. -->
+      <section class="controlbar">
+        <p class="controlbar-note">
+          Parmi tes segments favoris, lesquels ont le vent dans le bon sens aujourd'hui ?
+          Question géométrique pure (orientation du tracé contre le vent prévu) — indépendante
+          de ta forme, ton poids ou ta puissance seuil.
+        </p>
+        <button id="scan-button" type="button" class="btn-primary">Scanner mes segments</button>
+      </section>
+
+      <p id="status" class="status-line"></p>
+      <div id="results" hidden></div>
+    </div>
+
+    <script src="segments-du-jour.js"></script>
+  </body>
+</html>
