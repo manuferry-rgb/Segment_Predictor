@@ -258,12 +258,16 @@ def list_segments(request: Request) -> list[SegmentSummary]:
     segments favoris de tout le monde.
     """
     user_id = _require_user_id(request)
-    rows = _db_cursor().execute(
-        "SELECT s.id, s.name, s.distance_m, s.total_elevation_gain_m FROM segments s "
-        "JOIN user_starred_segments u ON u.segment_id = s.id "
-        "WHERE u.user_id = ? ORDER BY s.name",
-        [user_id],
-    ).fetchall()
+    rows = (
+        _db_cursor()
+        .execute(
+            "SELECT s.id, s.name, s.distance_m, s.total_elevation_gain_m FROM segments s "
+            "JOIN user_starred_segments u ON u.segment_id = s.id "
+            "WHERE u.user_id = ? ORDER BY s.name",
+            [user_id],
+        )
+        .fetchall()
+    )
     return [
         SegmentSummary(id=row[0], name=row[1], distance_m=row[2], elevation_gain_m=row[3])
         for row in rows

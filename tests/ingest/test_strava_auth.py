@@ -15,6 +15,7 @@ from segment_predictor.ingest.strava_auth import (
     TokenState,
     exchange_authorization_code,
     get_valid_access_token,
+    get_valid_access_token_for_user,
     persist_tokens,
     refresh_access_token,
 )
@@ -270,3 +271,75 @@ def test_exchange_authorization_code_allows_missing_name_fields() -> None:
 
     assert result.firstname is None
     assert result.lastname is None
+
+
+# ---- get_valid_access_token_for_user (T-46) --------------------------------------------
+# Équivalent de get_valid_access_token, mais pour un utilisateur du flux
+# web (T-45) : le token vit dans `users` (storage/users.py), pas `.env`.
+
+
+def _connection_with_user(user_id: int, access_token: str, refresh_token: str, expires_at: int):
+    import duckdb
+
+    from segment_predictor.storage.users import ensure_users_table, upsert_user
+
+    conn = duckdb.connect(":memory:")
+    ensure_users_table(conn)
+    upsert_user(conn, user_id, "Manu", "F.", access_token, refresh_token, expires_at)
+    return conn
+
+
+def test_get_valid_access_token_for_user_reuses_cached_token_when_not_expired() -> None:
+    conn = _connection_with_user(1, "cached_access", "refresh", expires_at=2_000_000_000)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("no HTTP call expected: the cached token is still valid")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    token = get_valid_access_token_for_user(
+        client, conn, "id", "secret", user_id=1, now=1_000_000_000
+    )
+
+    assert token == "cached_access"
+
+
+def test_get_valid_access_token_for_user_refreshes_and_persists_when_expired() -> None:
+    conn = _connection_with_user(1, "expired_access", "old_refresh", expires_at=100)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = request.read()
+        assert b"refresh_token=old_refresh" in body
+        return httpx.Response(
+            200,
+            json={
+                "access_token": "new_access",
+                "refresh_token": "new_refresh",
+                "expires_at": 2_000_000_000,
+                "expires_in": 21600,
+            },
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    token = get_valid_access_token_for_user(
+        client, conn, "id", "secret", user_id=1, now=1_000_000_000
+    )
+
+    assert token == "new_access"
+    from segment_predictor.storage.users import get_user
+
+    persisted = get_user(conn, 1)
+    assert persisted.access_token == "new_access"
+    assert persisted.refresh_token == "new_refresh"
+    assert persisted.expires_at == 2_000_000_000
+    # Le nom n'est pas reperdu au passage (upsert_user réécrit toutes les colonnes)
+    assert persisted.firstname == "Manu"
+
+
+def test_get_valid_access_token_for_user_raises_for_unknown_user() -> None:
+    conn = _connection_with_user(1, "a", "r", expires_at=2_000_000_000)
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={})))
+
+    with pytest.raises(ValueError, match="999"):
+        get_valid_access_token_for_user(client, conn, "id", "secret", user_id=999, now=0)

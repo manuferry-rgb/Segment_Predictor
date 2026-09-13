@@ -23,6 +23,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+import duckdb
 import httpx
 from dotenv import dotenv_values
 
@@ -175,4 +176,49 @@ def get_valid_access_token(
 
     token_state = refresh_access_token(http_client, client_id, client_secret, refresh_token)
     persist_tokens(env_path, token_state)
+    return token_state.access_token
+
+
+def get_valid_access_token_for_user(
+    http_client: httpx.Client,
+    conn: duckdb.DuckDBPyConnection,
+    client_id: str,
+    client_secret: str,
+    user_id: int,
+    now: int | None = None,
+) -> str:
+    """Équivalent de `get_valid_access_token` (ci-dessus) pour un
+    utilisateur du flux web "Se connecter avec Strava" (T-45/T-46) : le
+    token vit dans `users` (storage/users.py), pas dans `.env` — chaque
+    utilisateur a le sien, `.env` ne connaît que celui de l'auteur.
+
+    Import de `storage.users` fait ICI (pas en tête de module) : cette
+    fonction est la seule de tout `ingest/` à en dépendre — le reste du
+    fichier reste "juste du .env", garder l'import local évite de faire
+    croire que tout `strava_auth.py` dépend de la couche storage.
+
+    `client_id`/`client_secret` restent ceux de l'application Strava
+    elle-même (partagés par tout le monde, dans `.env`) — seul le
+    `refresh_token` change selon l'utilisateur.
+    """
+    from segment_predictor.storage.users import get_user, upsert_user
+
+    user = get_user(conn, user_id)
+    if user is None:
+        raise ValueError(f"utilisateur {user_id} introuvable dans `users`")
+
+    current_time = now if now is not None else int(time.time())
+    if user.expires_at > current_time:
+        return user.access_token
+
+    token_state = refresh_access_token(http_client, client_id, client_secret, user.refresh_token)
+    upsert_user(
+        conn,
+        id=user_id,
+        firstname=user.firstname,
+        lastname=user.lastname,
+        access_token=token_state.access_token,
+        refresh_token=token_state.refresh_token,
+        expires_at=token_state.expires_at,
+    )
     return token_state.access_token
