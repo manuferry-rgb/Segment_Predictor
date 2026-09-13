@@ -110,6 +110,25 @@ async function loadSegments() {
   }
 }
 
+const MAX_WINDOWS_PER_DAY = 2;
+
+// Demandé : l'écart entre deux créneaux voisins du même jour est souvent
+// minime (quelques secondes) — afficher les 6+ heures d'une même journée
+// n'apporte rien, seuls les 2 meilleurs créneaux de chaque jour comptent.
+// `windows` est déjà trié par temps prédit croissant (l'API, T-27) : les
+// 2 premiers rencontrés pour un jour calendaire donné SONT ses 2
+// meilleurs, pas 2 au hasard — pas besoin de retrier ici.
+function topWindowsPerDay(windows, maxPerDay = MAX_WINDOWS_PER_DAY) {
+  const countByDay = new Map();
+  return windows.filter((w) => {
+    const day = w.time.slice(0, 10); // "2026-09-13T14:00:00" -> "2026-09-13"
+    const count = countByDay.get(day) ?? 0;
+    if (count >= maxPerDay) return false;
+    countByDay.set(day, count + 1);
+    return true;
+  });
+}
+
 function renderWindowRows(windows) {
   return windows
     .map((w) => {
@@ -294,12 +313,16 @@ function renderResults(data) {
         ${renderUncertaintyCard(data.uncertainty, best.predicted_time_s)}
         <article class="card">
           <h2>Classement des créneaux</h2>
+          <p class="card-note">
+            Au plus ${MAX_WINDOWS_PER_DAY} par jour — l'écart entre deux heures voisines
+            du même jour est souvent minime, inutile de lister chaque heure.
+          </p>
           <div class="table-wrap">
             <table>
               <thead>
                 <tr><th>Créneau</th><th>Temps</th><th>Puissance</th><th>Vent</th><th>Temp.</th></tr>
               </thead>
-              <tbody>${renderWindowRows(data.windows)}</tbody>
+              <tbody>${renderWindowRows(topWindowsPerDay(data.windows))}</tbody>
             </table>
           </div>
         </article>
