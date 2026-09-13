@@ -1,4 +1,4 @@
-# Kompass — prédicteur de temps sur segment Strava
+# Segment Chaser — prédicteur de temps sur segment Strava
 
 ## Objectif du projet
 

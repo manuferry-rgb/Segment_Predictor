@@ -1,4 +1,4 @@
-# Notes d'ingénierie — Kompass
+# Notes d'ingénierie — Segment Chaser
 
 Journal technique détaillé, ticket par ticket : schéma de données,
 décisions et leur justification, résultats réels, limites connues. Écrit

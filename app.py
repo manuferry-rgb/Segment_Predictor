@@ -109,19 +109,21 @@ def _render_metric_card(
     """
     delta_html = ""
     if delta_s is not None:
-        color_class = "kompass-delta-green" if delta_s < 0 else "kompass-delta-red"
+        color_class = "segment-chaser-delta-green" if delta_s < 0 else "segment-chaser-delta-red"
         arrow = "↓" if delta_s < 0 else "↑"
-        delta_html = f'<div class="kompass-card-delta {color_class}">{arrow} {delta_s:+.0f}s</div>'
+        delta_html = (
+            f'<div class="segment-chaser-card-delta {color_class}">{arrow} {delta_s:+.0f}s</div>'
+        )
 
     extra_html = "".join(
-        f'<div class="kompass-card-extra">{line}</div>' for line in (extra_lines or [])
+        f'<div class="segment-chaser-card-extra">{line}</div>' for line in (extra_lines or [])
     )
 
     container.markdown(
         f"""
-        <div class="kompass-card">
-            <div class="kompass-card-label">{label}</div>
-            <div class="kompass-card-value">{value}</div>
+        <div class="segment-chaser-card">
+            <div class="segment-chaser-card-label">{label}</div>
+            <div class="segment-chaser-card-value">{value}</div>
             {delta_html}
             {extra_html}
         </div>
@@ -156,7 +158,7 @@ def load_segments() -> list[tuple[int, str]]:
     ).fetchall()
 
 
-st.set_page_config(page_title="Kompass", page_icon="🚴")
+st.set_page_config(page_title="Segment Chaser", page_icon="🚴")
 
 # CSS injecté (T-31) : Streamlit n'expose pas via config.toml le style des
 # cartes st.metric individuellement, seulement la palette globale — on
@@ -184,23 +186,23 @@ st.markdown(
     /* Cases KOM/PR (T-31 suite) : même habillage que div[data-testid="stMetric"]
        ci-dessus, mais en HTML direct pour pouvoir empiler des lignes de
        texte (date, lien Strava, puissance...) DANS la même boîte. */
-    .kompass-card {
+    .segment-chaser-card {
         background-color: #FFF1EC;
         border-left: 4px solid #FF4B2B;
         border-radius: 8px;
         padding: 0.9rem 1rem 0.9rem 1rem;
         margin-bottom: 1rem;
     }
-    .kompass-card-label {
+    .segment-chaser-card-label {
         font-size: 0.875rem;
         color: rgba(49, 51, 63, 0.6);
     }
-    .kompass-card-value {
+    .segment-chaser-card-value {
         font-size: 1.65rem;
         font-weight: 700;
         line-height: 1.2;
     }
-    .kompass-card-delta {
+    .segment-chaser-card-delta {
         display: inline-block;
         font-size: 0.8rem;
         font-weight: 600;
@@ -208,20 +210,20 @@ st.markdown(
         border-radius: 6px;
         margin-top: 0.3rem;
     }
-    .kompass-delta-green {
+    .segment-chaser-delta-green {
         color: #1a7f37;
         background-color: rgba(26, 127, 55, 0.12);
     }
-    .kompass-delta-red {
+    .segment-chaser-delta-red {
         color: #cf222e;
         background-color: rgba(207, 34, 46, 0.12);
     }
-    .kompass-card-extra {
+    .segment-chaser-card-extra {
         font-size: 0.8rem;
         color: rgba(49, 51, 63, 0.75);
         margin-top: 0.4rem;
     }
-    .kompass-card-extra a {
+    .segment-chaser-card-extra a {
         color: #FF4B2B;
     }
     </style>
@@ -229,7 +231,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.title("🚴 Kompass")
+st.title("🚴 Segment Chaser")
 st.caption("Meilleure fenêtre horaire et stratégie de pacing pour un segment Strava")
 
 conn = get_connection()

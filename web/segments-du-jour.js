@@ -73,7 +73,7 @@ function renderResults(opportunities) {
       d'où deux colonnes plutôt qu'une seule.
     </p>
     <article class="card">
-      <h2>Top ${shown} — clique une ligne pour ouvrir ce segment dans Kompass</h2>
+      <h2>Top ${shown} — clique une ligne pour ouvrir ce segment dans Segment Chaser</h2>
       <div class="table-wrap">
         <table>
           <thead>

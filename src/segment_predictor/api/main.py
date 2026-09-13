@@ -106,16 +106,23 @@ N_MONTE_CARLO_SAMPLES = 300
 # prévision-vs-réalisé disponible pour la calibrer.
 WIND_RELATIVE_STD = 0.20
 
-app = FastAPI(title="Kompass API")
+app = FastAPI(title="Segment Chaser API")
 
 # SessionMiddleware (T-45, nouveau concept) : signe un cookie
-# (`kompass_session`) contenant l'état de connexion (user_id) — sans
-# lui, chaque requête serait anonyme, impossible de savoir "qui parle"
-# entre /auth/strava/callback et /predict. https_only=False : correct en
-# local (http://127.0.0.1) ; à repasser à True le jour où l'app tourne
-# derrière un vrai domaine HTTPS (T-47), sinon le cookie ne serait plus
-# envoyé du tout par le navigateur.
-app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET_KEY, https_only=False)
+# (`session_cookie=` ci-dessous, nommé explicitement plutôt que de
+# laisser le nom générique "session" par défaut) contenant l'état de
+# connexion (user_id) — sans lui, chaque requête serait anonyme,
+# impossible de savoir "qui parle" entre /auth/strava/callback et
+# /predict. https_only=False : correct en local (http://127.0.0.1) ;
+# à repasser à True le jour où l'app tourne derrière un vrai domaine
+# HTTPS (T-47), sinon le cookie ne serait plus envoyé du tout par le
+# navigateur.
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=SESSION_SECRET_KEY,
+    session_cookie="segment_chaser_session",
+    https_only=False,
+)
 
 # Une connexion DuckDB par PROCESSUS uvicorn, ouverte une seule fois au
 # chargement du module — pas par requête. Équivalent du st.cache_resource

@@ -283,7 +283,7 @@ favoris pour la météo du jour, sans calibration.
 *Critère de fin* : équivalent JSON du tableau actuel de "Segments du
 jour".
 
-**T-39 — Page HTML/CSS/JS "Kompass"**
+**T-39 — Page HTML/CSS/JS "Segment Chaser"**
 `web/index.html` + `app.js` + `style.css`, servis statiquement par
 FastAPI (`StaticFiles`). Reproduit le flux de la page principale
 (sélection segment/scénario/poids -> `fetch('/predict')` -> affichage)
@@ -359,7 +359,7 @@ de Streamlit (l'autre moitié de T-41) reste à faire séparément.
 *Critère de fin* : `GET /wind-scan` expose `wind_alignment_pct` ; la
 page affiche le top 10 trié par vent favorable réel, avec le %
 d'alignement en colonne, clic sur une ligne -> segment présélectionné
-dans Kompass. Vérifié en vrai contre les 78 segments favoris.
+dans Segment Chaser. Vérifié en vrai contre les 78 segments favoris.
 
 ---
 

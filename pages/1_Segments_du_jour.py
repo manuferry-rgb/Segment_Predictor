@@ -90,7 +90,7 @@ if opportunities is not None:
         f"**{n_good}** segment(s) sur **{len(opportunities)}** avec un vent favorable "
         "en moyenne aujourd'hui."
     )
-    st.caption("Clique sur une ligne pour ouvrir ce segment dans Kompass.")
+    st.caption("Clique sur une ligne pour ouvrir ce segment dans Segment Chaser.")
 
     # Déjà trié par average_tailwind_speed_ms décroissante
     # (scan_segments_for_today) : les segments "à tenter" sont donc

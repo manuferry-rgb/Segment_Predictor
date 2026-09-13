@@ -1,4 +1,4 @@
-# Kompass — prédicteur de temps sur segment Strava
+# Segment Chaser — prédicteur de temps sur segment Strava
 
 Prédit le temps réalisable sur un segment Strava donné à partir d'un
 modèle physique du cycliste (courbe de puissance, aérodynamique,
