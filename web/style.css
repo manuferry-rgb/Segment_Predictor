@@ -184,7 +184,8 @@ h1, h2 { text-wrap: balance; margin: 0; }
 }
 
 .auth-login,
-.auth-logout {
+.auth-logout,
+.auth-sync {
   font-family: var(--font-body);
   font-weight: 700;
   font-size: 0.82rem;
@@ -200,15 +201,22 @@ h1, h2 { text-wrap: balance; margin: 0; }
   color: var(--accent-ink);
 }
 
-.auth-logout {
+.auth-logout,
+.auth-sync {
   background: transparent;
   color: var(--text-muted);
   border: 1px solid var(--border);
 }
 
-.auth-logout:hover {
+.auth-logout:hover,
+.auth-sync:hover {
   color: var(--text);
   border-color: var(--text-muted);
+}
+
+.auth-sync:disabled {
+  cursor: wait;
+  opacity: 0.6;
 }
 
 /* ---- barre de contrôle ---- */

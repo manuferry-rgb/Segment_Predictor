@@ -30,7 +30,21 @@ from segment_predictor.calibrate.draft_tagging import (
     load_existing_annotations,
 )
 from segment_predictor.calibrate.form import recent_performance_index_values
-from segment_predictor.ingest.strava_auth import exchange_authorization_code
+from segment_predictor.ingest.strava_activities import fetch_and_store_new_activities
+from segment_predictor.ingest.strava_activity_details import fetch_and_store_activity_details
+from segment_predictor.ingest.strava_auth import (
+    exchange_authorization_code,
+    get_valid_access_token_for_user,
+)
+from segment_predictor.ingest.strava_segments import (
+    fetch_and_store_segments,
+    list_starred_segment_ids,
+)
+from segment_predictor.ingest.strava_streams import (
+    ensure_path_is_gitignored,
+    fetch_and_store_streams,
+    list_eligible_activity_ids,
+)
 from segment_predictor.models.draft import draft_ratio_for_preset
 from segment_predictor.models.pacing import optimize_pacing
 from segment_predictor.models.polyline import decode_polyline
@@ -43,6 +57,14 @@ from segment_predictor.models.segment import (
 from segment_predictor.models.uncertainty import propagate_uncertainty
 from segment_predictor.predict.forecast_window import rank_forecast_windows_for_segment
 from segment_predictor.predict.wind_scan import scan_segments_for_today
+from segment_predictor.storage.activities import build_activities_table
+from segment_predictor.storage.segment_efforts import build_segment_efforts_table
+from segment_predictor.storage.segments import (
+    build_segments_table,
+    build_user_segment_stats_table,
+    build_user_starred_segments_table,
+)
+from segment_predictor.storage.streams import build_streams_table
 from segment_predictor.storage.users import ensure_users_table, get_user, upsert_user
 
 # 4 parents : main.py -> api/ -> segment_predictor/ -> src/ -> racine du
@@ -52,6 +74,10 @@ DUCKDB_PATH = PROJECT_ROOT / "data" / "segment_predictor.duckdb"
 CSV_PATH = PROJECT_ROOT / "annotations" / "draft_status.csv"
 WEB_DIR = PROJECT_ROOT / "web"
 ENV_PATH = PROJECT_ROOT / ".env"
+# T-46 : racine des dossiers bruts par utilisateur (T-44d) — chaque
+# source y a son sous-dossier <user_id>/, sauf open_meteo (météo
+# partagée), pas fetchée par /sync (voir sa docstring).
+RAW_DIR_ROOT = PROJECT_ROOT / "data" / "raw"
 
 _env_values = dotenv_values(ENV_PATH)
 STRAVA_CLIENT_ID = _env_values.get("STRAVA_CLIENT_ID")
@@ -232,6 +258,99 @@ def me(request: Request) -> CurrentUser:
     if user is None:
         return CurrentUser(authenticated=False)
     return CurrentUser(authenticated=True, firstname=user.firstname)
+
+
+class SyncSummary(BaseModel):
+    new_activities_fetched: bool
+    streams_fetched: int
+    streams_remaining: int
+    streams_quota_reached: bool
+    activity_details_fetched: int
+    activity_details_remaining: int
+    activity_details_quota_reached: bool
+    segments_fetched: int
+    segments_remaining: int
+    segments_quota_reached: bool
+
+
+@app.post("/sync", response_model=SyncSummary)
+def sync(request: Request) -> SyncSummary:
+    """Synchronise les données Strava de l'utilisateur CONNECTÉ (T-46) —
+    remplace, pour un utilisateur du flux web, les scripts CLI
+    (fetch_activities.py, etc.) qui ne savent lire que le .env de
+    l'auteur.
+
+    Ne fetche PAS la météo (`activity_weather`) ni le wellness
+    (intervals.icu) : vérifié avant d'écrire ce ticket, `activity_
+    weather` n'est lue par AUCUN module de calibrate/predict (juste
+    construite, jamais consommée) — l'omettre ici ne change rien au
+    résultat de /predict. intervals.icu resterait de toute façon propre
+    à l'auteur (pas de compte par utilisateur) — hors périmètre.
+
+    Synchrone, pas de file d'attente/tâche de fond (T-47 pourra revoir
+    ça si le volume l'impose un jour) : peut prendre de quelques
+    secondes à plusieurs minutes selon l'historique Strava de la
+    personne — le frontend affiche un statut d'attente (T-46, comme
+    /wind-scan avant lui).
+
+    Le quota Strava est PAR APPLICATION, pas par utilisateur (voir
+    ROADMAP.md, Phase 14) : un utilisateur peut donc être arrêté par du
+    quota consommé par un AUTRE utilisateur — les indicateurs
+    `*_quota_reached` le signalent plutôt que de le cacher.
+    """
+    user_id = _require_user_id(request)
+    conn = _db_cursor()
+
+    user_id_str = str(user_id)
+    activities_raw_dir = RAW_DIR_ROOT / "strava_activities" / user_id_str
+    streams_raw_dir = RAW_DIR_ROOT / "strava_streams" / user_id_str
+    segments_raw_dir_root = RAW_DIR_ROOT / "strava_segments"
+    segments_raw_dir = segments_raw_dir_root / user_id_str
+    details_raw_dir = RAW_DIR_ROOT / "strava_activity_details" / user_id_str
+
+    with httpx.Client(timeout=30.0) as client:
+        access_token = get_valid_access_token_for_user(
+            client, conn, STRAVA_CLIENT_ID, STRAVA_CLIENT_SECRET, user_id
+        )
+
+        new_activities_path = fetch_and_store_new_activities(
+            client, access_token, activities_raw_dir
+        )
+
+        ensure_path_is_gitignored(streams_raw_dir, PROJECT_ROOT)
+        streams_summary = fetch_and_store_streams(
+            client, access_token, activities_raw_dir, streams_raw_dir
+        )
+
+        eligible_ids = list_eligible_activity_ids(activities_raw_dir)
+        details_summary = fetch_and_store_activity_details(
+            client, access_token, eligible_ids, details_raw_dir
+        )
+
+        segment_ids = list_starred_segment_ids(client, access_token)
+        segments_summary = fetch_and_store_segments(
+            client, access_token, segment_ids, segments_raw_dir
+        )
+
+    build_activities_table(conn, activities_raw_dir, user_id=user_id)
+    build_streams_table(conn, streams_raw_dir, user_id=user_id)
+    build_segments_table(conn, segments_raw_dir_root)
+    build_user_segment_stats_table(conn, segments_raw_dir, user_id=user_id)
+    build_user_starred_segments_table(conn, segments_raw_dir, user_id=user_id)
+    build_segment_efforts_table(conn, details_raw_dir, user_id=user_id)
+
+    return SyncSummary(
+        new_activities_fetched=new_activities_path is not None,
+        streams_fetched=len(streams_summary.fetched_activity_ids),
+        streams_remaining=len(streams_summary.remaining_activity_ids),
+        streams_quota_reached=streams_summary.stopped_due_to_daily_quota,
+        activity_details_fetched=len(details_summary.fetched_ids),
+        activity_details_remaining=len(details_summary.remaining_ids),
+        activity_details_quota_reached=details_summary.stopped_due_to_daily_quota,
+        segments_fetched=len(segments_summary.fetched_ids),
+        segments_remaining=len(segments_summary.remaining_ids),
+        segments_quota_reached=segments_summary.stopped_due_to_daily_quota,
+    )
 
 
 # pydantic.BaseModel (nouveau concept) : décrit la forme exacte d'une
