@@ -168,6 +168,49 @@ h1, h2 { text-wrap: balance; margin: 0; }
   border-radius: 999px;
 }
 
+/* ---- connexion Strava (T-45c) ---- */
+/* margin-left: auto : poussé à l'extrémité droite de .topbar, à
+   l'opposé de .brand — même conteneur flex, pas une position séparée. */
+.auth-widget {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.auth-status {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.auth-login,
+.auth-logout {
+  font-family: var(--font-body);
+  font-weight: 700;
+  font-size: 0.82rem;
+  border-radius: 999px;
+  padding: 0.45rem 0.9rem;
+  text-decoration: none;
+  border: none;
+  cursor: pointer;
+}
+
+.auth-login {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.auth-logout {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+
+.auth-logout:hover {
+  color: var(--text);
+  border-color: var(--text-muted);
+}
+
 /* ---- barre de contrôle ---- */
 .controlbar {
   display: flex;

@@ -296,8 +296,7 @@ def average_wind_alignment_pct(chunks: list[SegmentChunk], wind_direction_rad: f
     # (fixé à 1.0, pure projection angulaire) plutôt qu'en dupliquant le
     # cos() séparément.
     weighted_alignment = sum(
-        chunk.length_m
-        * -effective_headwind_speed_ms(1.0, wind_direction_rad, chunk.heading_rad)
+        chunk.length_m * -effective_headwind_speed_ms(1.0, wind_direction_rad, chunk.heading_rad)
         for chunk in chunks
     )
     return (weighted_alignment / total_length_m) * 100.0

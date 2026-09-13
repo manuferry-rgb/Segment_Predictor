@@ -221,8 +221,7 @@ def build_user_starred_segments_table(
     `build_user_segment_stats_table` ci-dessus.
     """
     rows = [
-        {"user_id": user_id, "segment_id": segment["id"]}
-        for segment in _read_raw_segments(raw_dir)
+        {"user_id": user_id, "segment_id": segment["id"]} for segment in _read_raw_segments(raw_dir)
     ]
 
     starred_table = pa.Table.from_pylist(
@@ -235,8 +234,6 @@ def build_user_starred_segments_table(
             "SELECT * FROM user_starred_segments_table WHERE FALSE"
         )
         conn.execute("DELETE FROM user_starred_segments WHERE user_id = ?", [user_id])
-        conn.execute(
-            "INSERT INTO user_starred_segments SELECT * FROM user_starred_segments_table"
-        )
+        conn.execute("INSERT INTO user_starred_segments SELECT * FROM user_starred_segments_table")
     finally:
         conn.unregister("user_starred_segments_table")

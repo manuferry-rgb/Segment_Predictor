@@ -6,10 +6,15 @@ Couche ingest : uniquement de l'I/O (appel réseau + lecture/écriture du
 Strava renvoie un NOUVEAU refresh_token à chaque rafraîchissement et
 invalide l'ancien. On doit donc persister systématiquement les 3 valeurs
 (access_token, refresh_token, expires_at) après un refresh, sinon l'auth
-casse dès le refresh suivant. Le choix de stockage est le fichier .env
-lui-même : c'est déjà le stockage des secrets du projet (gitignored),
-et le projet est mono-utilisateur — une base ou un fichier séparé
-serait une couche en trop pour 3 valeurs.
+casse dès le refresh suivant. `refresh_access_token`/`get_valid_access_
+token`/`persist_tokens` restent tels quels depuis l'époque mono-
+utilisateur du projet : les scripts CLI (fetch_activities.py, etc.)
+utilisent toujours le .env de l'auteur pour lire SES propres données.
+
+`exchange_authorization_code` (T-45) est différente : c'est l'échange
+utilisé par le flux web "Se connecter avec Strava", où N'IMPORTE QUI
+peut s'autoriser — ses tokens sont alors stockés dans `users`
+(storage/users.py), pas dans .env.
 """
 
 import os
@@ -56,6 +61,57 @@ def refresh_access_token(
         access_token=data["access_token"],
         refresh_token=data["refresh_token"],
         expires_at=data["expires_at"],
+    )
+
+
+@dataclass(frozen=True)
+class AuthorizedAthlete:
+    """Résultat d'un échange `authorization_code` -> tokens (T-45).
+
+    Contrairement à `refresh_access_token`, cette réponse contient AUSSI
+    le profil de l'athlète qui vient de s'autoriser — la seule fois où
+    Strava le fournit dans la réponse de /oauth/token (pas au
+    rafraîchissement) : c'est ce qui permet de savoir QUI se connecte,
+    sans lui poser la question ni faire un second appel.
+    """
+
+    athlete_id: int
+    firstname: str | None
+    lastname: str | None
+    token_state: TokenState
+
+
+def exchange_authorization_code(
+    http_client: httpx.Client, client_id: str, client_secret: str, code: str
+) -> AuthorizedAthlete:
+    """Échange le `code` reçu sur `/auth/strava/callback` (T-45) contre les
+    tokens de CETTE personne et son identité Strava.
+
+    `firstname`/`lastname` peuvent être absents (Strava ne les garantit
+    pas) — `None`, pas une KeyError : ce ne sont que des champs d'affichage
+    ("connecté comme Prénom"), rien n'en dépend fonctionnellement.
+    """
+    response = http_client.post(
+        STRAVA_TOKEN_URL,
+        data={
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "code": code,
+            "grant_type": "authorization_code",
+        },
+    )
+    response.raise_for_status()
+    data = response.json()
+    athlete = data["athlete"]
+    return AuthorizedAthlete(
+        athlete_id=athlete["id"],
+        firstname=athlete.get("firstname"),
+        lastname=athlete.get("lastname"),
+        token_state=TokenState(
+            access_token=data["access_token"],
+            refresh_token=data["refresh_token"],
+            expires_at=data["expires_at"],
+        ),
     )
 
 

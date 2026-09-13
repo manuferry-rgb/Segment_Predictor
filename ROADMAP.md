@@ -419,8 +419,34 @@ toute appli à plusieurs utilisateurs. Découpage validé avec l'auteur :
   `storage/`, `calibrate/`, `predict/`, `api/` doit filtrer par
   utilisateur. Le plus gros morceau, le plus risqué (une requête
   oubliée = fuite de données entre utilisateurs).
-- **T-45 — OAuth "Se connecter avec Strava"** : `/auth/strava/login` +
-  `/auth/strava/callback`, session par cookie signé, bouton dans l'UI.
+- **T-45 — OAuth "Se connecter avec Strava"** ✅ `exchange_authorization_code`
+  (ingest/strava_auth.py, seul point où Strava renvoie aussi le profil
+  athlète) ; `/auth/strava/login` (redirige, pose un `state` CSRF en
+  session) + `/auth/strava/callback` (vérifie `state`, échange le code,
+  upsert dans `users`, pose `user_id` en session) + `/auth/logout` +
+  `/auth/me` ; `SessionMiddleware` (cookie signé, `itsdangerous` ajouté
+  en dépendance explicite) ; bouton "Se connecter avec Strava" /
+  "Connecté comme {prénom}" dans le topbar des deux pages (T-45c,
+  `web/auth.js`, script partagé). Connexion `_connection` de l'API
+  passée en lecture-écriture (plus read_only) pour pouvoir écrire dans
+  `users`.
+
+  **Bug réel trouvé et corrigé pendant les tests** : toutes les routes
+  partageaient LA MÊME connexion DuckDB — deux requêtes HTTP
+  concurrentes (le navigateur charge `/auth/me` et `/segments` en
+  parallèle) pouvaient lire le résultat l'une de l'autre (DuckDB ne
+  garantit pas une connexion partagée entre threads). Corrigé par
+  `_db_cursor()` : un curseur DuckDB (`.cursor()`, "duplique" la
+  connexion) obtenu en tout début de chaque route, jamais `_connection`
+  utilisée directement après le démarrage.
+
+  Vérifié en vrai (vraie autorisation Strava, pas un mock) : la page de
+  consentement Strava affiche bien "Segment_Predictor" avec le bon
+  scope, le callback crée la ligne dans `users`, `/auth/me` répond
+  correctement, la déconnexion aussi. `CURRENT_USER_ID` reste pour
+  l'instant codé en dur dans `/predict`/`/segments`/`/wind-scan` — les
+  brancher sur `request.session["user_id"]` (finir T-44e) est le
+  prochain morceau.
 - **T-46 — Ingestion à la demande** : remplacer les scripts CLI
   mono-utilisateur par un flux déclenché après connexion.
 - **T-47 — Hébergement** : l'app tourne aujourd'hui uniquement en local

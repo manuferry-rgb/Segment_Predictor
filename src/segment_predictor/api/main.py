@@ -8,14 +8,19 @@ raison que app.py (cf sa docstring, T-29).
 Usage : uv run uvicorn segment_predictor.api.main:app --reload
 """
 
+import secrets
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlencode
 
 import duckdb
 import httpx
-from fastapi import FastAPI, HTTPException
+from dotenv import dotenv_values
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.middleware.sessions import SessionMiddleware
 
 from segment_predictor.calibrate.cda_crr import calibrate_cda_crr_from_db
 from segment_predictor.calibrate.draft_tagging import (
@@ -25,6 +30,7 @@ from segment_predictor.calibrate.draft_tagging import (
     load_existing_annotations,
 )
 from segment_predictor.calibrate.form import recent_performance_index_values
+from segment_predictor.ingest.strava_auth import exchange_authorization_code
 from segment_predictor.models.draft import draft_ratio_for_preset
 from segment_predictor.models.pacing import optimize_pacing
 from segment_predictor.models.polyline import decode_polyline
@@ -37,6 +43,7 @@ from segment_predictor.models.segment import (
 from segment_predictor.models.uncertainty import propagate_uncertainty
 from segment_predictor.predict.forecast_window import rank_forecast_windows_for_segment
 from segment_predictor.predict.wind_scan import scan_segments_for_today
+from segment_predictor.storage.users import ensure_users_table, get_user, upsert_user
 
 # 4 parents : main.py -> api/ -> segment_predictor/ -> src/ -> racine du
 # projet (app.py, lui, est à la racine et n'a besoin que d'un seul .parent).
@@ -44,12 +51,29 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 DUCKDB_PATH = PROJECT_ROOT / "data" / "segment_predictor.duckdb"
 CSV_PATH = PROJECT_ROOT / "annotations" / "draft_status.csv"
 WEB_DIR = PROJECT_ROOT / "web"
+ENV_PATH = PROJECT_ROOT / ".env"
 
-# TEMPORAIRE (T-44c) : l'app reste mono-utilisateur en pratique jusqu'à
-# T-45 (connexion Strava, session par cookie) — aucune requête ici ne
-# sait encore "qui est connecté", donc on répond toujours pour ce seul
-# id (l'auteur). Chaque usage de cette constante est un endroit que
-# T-44e/T-45 devra remplacer par l'utilisateur de la session.
+_env_values = dotenv_values(ENV_PATH)
+STRAVA_CLIENT_ID = _env_values.get("STRAVA_CLIENT_ID")
+STRAVA_CLIENT_SECRET = _env_values.get("STRAVA_CLIENT_SECRET")
+# Signe (pas chiffre) le cookie de session (T-45, SessionMiddleware) :
+# n'importe qui peut LIRE son contenu (juste du base64), mais pas le
+# FORGER sans cette clé — c'est pour ça qu'on n'y met jamais de tokens
+# Strava, seulement un user_id (voir storage/users.py pour les tokens).
+SESSION_SECRET_KEY = _env_values.get("SESSION_SECRET_KEY")
+if not SESSION_SECRET_KEY:
+    raise RuntimeError(
+        "SESSION_SECRET_KEY manquant dans .env — requis pour signer le cookie de session (T-45)"
+    )
+
+STRAVA_AUTHORIZE_URL = "https://www.strava.com/oauth/authorize"
+# read : profil (id, prénom...) ; activity:read_all : mêmes données que
+# les scripts d'ingestion CLI utilisent déjà pour un seul utilisateur.
+STRAVA_OAUTH_SCOPE = "read,activity:read_all"
+
+# TEMPORAIRE (T-44c) : encore utilisée par /predict, /segments,
+# /wind-scan tant que T-44e (finir de brancher la session partout)
+# n'est pas fait — /auth/* (T-45) utilise déjà la vraie session.
 CURRENT_USER_ID = 16132599
 
 # 300, pas 2000 (T-32, cf app.py) : chaque tirage simule TOUS les
@@ -63,14 +87,141 @@ WIND_RELATIVE_STD = 0.20
 
 app = FastAPI(title="Kompass API")
 
+# SessionMiddleware (T-45, nouveau concept) : signe un cookie
+# (`kompass_session`) contenant l'état de connexion (user_id) — sans
+# lui, chaque requête serait anonyme, impossible de savoir "qui parle"
+# entre /auth/strava/callback et /predict. https_only=False : correct en
+# local (http://127.0.0.1) ; à repasser à True le jour où l'app tourne
+# derrière un vrai domaine HTTPS (T-47), sinon le cookie ne serait plus
+# envoyé du tout par le navigateur.
+app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET_KEY, https_only=False)
+
 # Une connexion DuckDB par PROCESSUS uvicorn, ouverte une seule fois au
 # chargement du module — pas par requête. Équivalent du st.cache_resource
 # de app.py, mais ici la raison d'être est différente : Streamlit
 # ré-exécute tout le script à chaque interaction (d'où le besoin d'un
 # cache explicite), alors qu'un module Python n'est importé qu'une fois
-# par processus de toute façon. read_only=True : l'API ne modifie jamais
-# la base, seuls les scripts d'ingestion le font.
-_connection = duckdb.connect(str(DUCKDB_PATH), read_only=True)
+# par processus de toute façon.
+#
+# PAS read_only (changé en T-45) : la connexion API doit désormais
+# pouvoir écrire dans `users` à chaque connexion/rafraîchissement de
+# token. Conséquence pratique inchangée depuis le début du projet : un
+# script d'ingestion (écriture, lui aussi) ne peut toujours pas tourner
+# EN MÊME TEMPS que le serveur (verrou DuckDB, un seul writer à la fois)
+# — il faut l'arrêter, lancer le script, le relancer.
+_connection = duckdb.connect(str(DUCKDB_PATH))
+ensure_users_table(_connection)
+
+
+def _db_cursor() -> duckdb.DuckDBPyConnection:
+    """Un curseur DuckDB PAR REQUÊTE (nouveau concept, bug réel rencontré
+    en testant T-45) : FastAPI exécute les routes "def" classiques dans
+    un pool de threads (voir plus haut) — DuckDB ne garantit PAS qu'une
+    même connexion supporte des requêtes lancées en parallèle par deux
+    threads différents. Constaté en vrai : le navigateur a chargé
+    `/auth/me` et `/segments` en même temps, et `/auth/me` a reçu la
+    ligne à 4 colonnes de `/segments` au lieu de sa propre requête à 6
+    colonnes sur `users` — les deux partageaient `_connection`.
+    `.cursor()` "duplique" la connexion (même base, exécution
+    indépendante) : chaque route appelle ceci UNE fois en tout début de
+    fonction, jamais `_connection` directement après ce point.
+    """
+    return _connection.cursor()
+
+
+@app.get("/auth/strava/login")
+def strava_login(request: Request) -> RedirectResponse:
+    """Redirige vers la page d'autorisation Strava (T-45) — première
+    étape du flux OAuth "Se connecter avec Strava".
+
+    `state` (nouveau concept, protection CSRF) : une valeur aléatoire
+    posée dans la session AVANT de partir chez Strava, revérifiée au
+    retour sur `/auth/strava/callback` — sans ça, un tiers pourrait
+    forger un lien de callback avec SON PROPRE code et faire connecter
+    la victime à SON compte Strava à elle (attaque documentée du
+    protocole OAuth), pas la moindre paranoïa excessive ici.
+
+    `request.url_for("strava_callback")` (nouveau concept) construit
+    l'URL absolue de la route ci-dessous à partir du NOM de la fonction
+    Python — jamais une URL en dur, qui serait fausse dès que l'app
+    tourne ailleurs qu'en local (T-47).
+    """
+    state = secrets.token_urlsafe(24)
+    request.session["oauth_state"] = state
+    params = {
+        "client_id": STRAVA_CLIENT_ID,
+        "redirect_uri": str(request.url_for("strava_callback")),
+        "response_type": "code",
+        "approval_prompt": "auto",
+        "scope": STRAVA_OAUTH_SCOPE,
+        "state": state,
+    }
+    return RedirectResponse(f"{STRAVA_AUTHORIZE_URL}?{urlencode(params)}")
+
+
+@app.get("/auth/strava/callback")
+def strava_callback(
+    request: Request,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+) -> RedirectResponse:
+    """Strava revient ici après que la personne a accepté (ou refusé) sur
+    son propre site — voir strava_login pour `state`.
+
+    `error` (ex. "access_denied") : Strava le renvoie si la personne a
+    cliqué "Refuser" plutôt que "Autoriser" — un cas normal, pas une
+    erreur serveur, donc pas de 500 pour ça.
+    """
+    if error is not None:
+        return RedirectResponse(f"/?auth_error={error}")
+
+    expected_state = request.session.pop("oauth_state", None)
+    if expected_state is None or state != expected_state:
+        raise HTTPException(status_code=400, detail="state OAuth invalide ou expiré")
+    if code is None:
+        raise HTTPException(status_code=400, detail="code manquant dans la réponse Strava")
+
+    with httpx.Client(timeout=30.0) as client:
+        authorized = exchange_authorization_code(
+            client, STRAVA_CLIENT_ID, STRAVA_CLIENT_SECRET, code
+        )
+
+    upsert_user(
+        _db_cursor(),
+        id=authorized.athlete_id,
+        firstname=authorized.firstname,
+        lastname=authorized.lastname,
+        access_token=authorized.token_state.access_token,
+        refresh_token=authorized.token_state.refresh_token,
+        expires_at=authorized.token_state.expires_at,
+    )
+    request.session["user_id"] = authorized.athlete_id
+    return RedirectResponse("/")
+
+
+@app.post("/auth/logout")
+def logout(request: Request) -> dict[str, bool]:
+    request.session.clear()
+    return {"authenticated": False}
+
+
+class CurrentUser(BaseModel):
+    authenticated: bool
+    firstname: str | None = None
+
+
+@app.get("/auth/me", response_model=CurrentUser)
+def me(request: Request) -> CurrentUser:
+    """Le frontend l'appelle au chargement pour savoir s'afficher "Se
+    connecter" ou "Connecté comme {firstname}" (T-45c)."""
+    user_id = request.session.get("user_id")
+    if user_id is None:
+        return CurrentUser(authenticated=False)
+    user = get_user(_db_cursor(), user_id)
+    if user is None:
+        return CurrentUser(authenticated=False)
+    return CurrentUser(authenticated=True, firstname=user.firstname)
 
 
 # pydantic.BaseModel (nouveau concept) : décrit la forme exacte d'une
@@ -96,7 +247,7 @@ def list_segments() -> list[SegmentSummary]:
     utilisateurs, sans ce filtre chacun verrait aussi les segments
     favoris de tout le monde.
     """
-    rows = _connection.execute(
+    rows = _db_cursor().execute(
         "SELECT s.id, s.name, s.distance_m, s.total_elevation_gain_m FROM segments s "
         "JOIN user_starred_segments u ON u.segment_id = s.id "
         "WHERE u.user_id = ? ORDER BY s.name",
@@ -232,22 +383,25 @@ class PredictResponse(BaseModel):
 # bibliothèques conçues pour ça (ex. httpx.AsyncClient), pas ici.
 @app.post("/predict", response_model=PredictResponse)
 def predict(request: PredictRequest) -> PredictResponse:
+    # Un seul curseur pour TOUTE la requête (voir _db_cursor) — pas un
+    # nouveau à chaque appel : les appels de cette fonction sont
+    # séquentiels sur le même thread, seul le PARTAGE entre requêtes
+    # concurrentes est le problème.
+    conn = _db_cursor()
     try:
         draft_ratio = draft_ratio_for_preset(request.draft_preset)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    cp_fit = fit_current_cp(_connection)
-    cda_crr_fit = calibrate_cda_crr_from_db(
-        _connection, CSV_PATH, mass_kg=request.mass_kg, cp_fit=cp_fit
-    )
+    cp_fit = fit_current_cp(conn)
+    cda_crr_fit = calibrate_cda_crr_from_db(conn, CSV_PATH, mass_kg=request.mass_kg, cp_fit=cp_fit)
     effective_cda_m2 = cda_crr_fit.cda_m2 * draft_ratio
 
     try:
         with httpx.Client(timeout=30.0) as client:
             windows = rank_forecast_windows_for_segment(
                 client,
-                _connection,
+                conn,
                 request.segment_id,
                 request.mass_kg,
                 effective_cda_m2,
@@ -267,7 +421,7 @@ def predict(request: PredictRequest) -> PredictResponse:
     # vent nul, donc un cap unique ne change rien à son résultat — pas la
     # peine d'y payer le coût du découpage par polyline (T-32) pour zéro
     # différence.
-    distance_m, average_grade, heading_rad, polyline, kom_seconds = _connection.execute(
+    distance_m, average_grade, heading_rad, polyline, kom_seconds = conn.execute(
         "SELECT distance_m, average_grade, heading_rad, polyline, kom_seconds "
         "FROM segments WHERE id = ?",
         [request.segment_id],
@@ -278,7 +432,7 @@ def predict(request: PredictRequest) -> PredictResponse:
     # en dur tant que T-45 (connexion Strava, session) n'est pas fait —
     # chaque requête ici devra un jour utiliser l'utilisateur de LA
     # session, pas cette constante (T-44e).
-    pr_stats_row = _connection.execute(
+    pr_stats_row = conn.execute(
         "SELECT pr_seconds FROM user_segment_stats WHERE user_id = ? AND segment_id = ?",
         [CURRENT_USER_ID, request.segment_id],
     ).fetchone()
@@ -306,7 +460,7 @@ def predict(request: PredictRequest) -> PredictResponse:
         # Retrouvé par (segment_id, elapsed_time_s) : segments.pr_seconds
         # ne porte pas l'id de l'effort correspondant, pas de jointure
         # directe possible (même limite que app.py).
-        pr_effort_row = _connection.execute(
+        pr_effort_row = conn.execute(
             "SELECT id, average_watts, device_watts, start_date, activity_id "
             "FROM segment_efforts WHERE user_id = ? AND segment_id = ? AND elapsed_time_s = ? "
             "ORDER BY start_date DESC LIMIT 1",
@@ -333,7 +487,7 @@ def predict(request: PredictRequest) -> PredictResponse:
     chunks = segment_chunks_from_polyline(decode_polyline(polyline), average_grade)
 
     # Incertitude (T-28)
-    performance_index_samples = recent_performance_index_values(_connection, cp_fit=cp_fit)
+    performance_index_samples = recent_performance_index_values(conn, cp_fit=cp_fit)
     uncertainty_info = None
     if performance_index_samples:
         uncertainty_result = propagate_uncertainty(
@@ -364,7 +518,7 @@ def predict(request: PredictRequest) -> PredictResponse:
     # plage mesurée (~3-20 min) avant d'avoir convergé. N'affecte ni le
     # classement ni predicted_time_s ci-dessus, uniquement ce chiffre de
     # comparaison.
-    mmp_curve = compute_aggregate_mmp_curve(_connection, DEFAULT_CP_FIT_DURATIONS_S)
+    mmp_curve = compute_aggregate_mmp_curve(conn, DEFAULT_CP_FIT_DURATIONS_S)
     real_power_curve_info = None
     real_power_curve_unavailable_reason = None
     try:
@@ -437,7 +591,7 @@ def wind_scan() -> list[WindOpportunity]:
     nombre de segments favoris.
     """
     with httpx.Client(timeout=30.0) as client:
-        opportunities = scan_segments_for_today(client, _connection)
+        opportunities = scan_segments_for_today(client, _db_cursor())
     return [
         WindOpportunity(
             segment_id=o.segment_id,

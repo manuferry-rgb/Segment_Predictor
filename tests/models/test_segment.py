@@ -359,9 +359,9 @@ def test_wind_alignment_is_minus_100_for_a_pure_headwind() -> None:
 
 def test_wind_alignment_is_near_zero_for_a_pure_crosswind() -> None:
     chunks = [SegmentChunk(0.0, 100.0, 0.0, heading_rad=0.0)]  # cap plein nord
-    assert average_wind_alignment_pct(
-        chunks, wind_direction_rad=math.pi / 2
-    ) == pytest.approx(0.0, abs=1e-9)
+    assert average_wind_alignment_pct(chunks, wind_direction_rad=math.pi / 2) == pytest.approx(
+        0.0, abs=1e-9
+    )
 
 
 def test_wind_alignment_is_weighted_by_chunk_length_not_chunk_count() -> None:

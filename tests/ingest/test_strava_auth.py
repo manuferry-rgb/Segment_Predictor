@@ -11,7 +11,9 @@ import pytest
 from dotenv import dotenv_values
 
 from segment_predictor.ingest.strava_auth import (
+    AuthorizedAthlete,
     TokenState,
+    exchange_authorization_code,
     get_valid_access_token,
     persist_tokens,
     refresh_access_token,
@@ -199,3 +201,72 @@ def test_persist_tokens_leaves_file_untouched_if_write_fails(tmp_path, monkeypat
     assert persisted["STRAVA_REFRESH_TOKEN"] == "old_refresh"
     leftover_tmp_files = [p for p in tmp_path.iterdir() if p.name != ".env"]
     assert leftover_tmp_files == []
+
+
+# ---- exchange_authorization_code (T-45) ------------------------------------------------
+# Contrairement à refresh_access_token (grant_type=refresh_token), cet
+# échange (grant_type=authorization_code) est la SEULE fois où Strava
+# renvoie aussi le profil de l'athlète dans la réponse — c'est ce qui
+# permet de savoir QUI vient de s'autoriser, sans lui poser la question.
+
+
+def test_exchange_authorization_code_returns_athlete_and_tokens() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/oauth/token"
+        body = request.read()
+        assert b"grant_type=authorization_code" in body
+        assert b"code=the_auth_code" in body
+        return httpx.Response(
+            200,
+            json={
+                "token_type": "Bearer",
+                "expires_at": 1_700_000_000,
+                "expires_in": 21600,
+                "refresh_token": "new_refresh",
+                "access_token": "new_access",
+                "athlete": {
+                    "id": 16132599,
+                    "firstname": "Manu",
+                    "lastname": "F.",
+                    "resource_state": 2,
+                },
+            },
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    result = exchange_authorization_code(
+        client, client_id="id", client_secret="secret", code="the_auth_code"
+    )
+
+    assert result == AuthorizedAthlete(
+        athlete_id=16132599,
+        firstname="Manu",
+        lastname="F.",
+        token_state=TokenState(
+            access_token="new_access", refresh_token="new_refresh", expires_at=1_700_000_000
+        ),
+    )
+
+
+def test_exchange_authorization_code_allows_missing_name_fields() -> None:
+    """Strava ne garantit pas firstname/lastname (compte minimal, ou
+    confidentialité) — None plutôt qu'une KeyError."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "expires_at": 1_700_000_000,
+                "refresh_token": "r",
+                "access_token": "a",
+                "athlete": {"id": 1, "resource_state": 2},
+            },
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    result = exchange_authorization_code(client, client_id="id", client_secret="secret", code="c")
+
+    assert result.firstname is None
+    assert result.lastname is None

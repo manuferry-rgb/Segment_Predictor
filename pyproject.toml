@@ -8,6 +8,7 @@ dependencies = [
     "duckdb>=1.1",
     "fastapi>=0.141.1",
     "httpx>=0.28",
+    "itsdangerous>=2.2.0",
     "matplotlib>=3.11.1",
     "numpy>=2.0",
     "pyarrow>=18.0",
