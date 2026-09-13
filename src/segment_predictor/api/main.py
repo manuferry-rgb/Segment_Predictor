@@ -8,6 +8,7 @@ raison que app.py (cf sa docstring, T-29).
 Usage : uv run uvicorn segment_predictor.api.main:app --reload
 """
 
+import os
 import secrets
 from datetime import datetime
 from pathlib import Path
@@ -15,7 +16,7 @@ from urllib.parse import urlencode
 
 import duckdb
 import httpx
-from dotenv import dotenv_values
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -79,17 +80,25 @@ ENV_PATH = PROJECT_ROOT / ".env"
 # partagée), pas fetchée par /sync (voir sa docstring).
 RAW_DIR_ROOT = PROJECT_ROOT / "data" / "raw"
 
-_env_values = dotenv_values(ENV_PATH)
-STRAVA_CLIENT_ID = _env_values.get("STRAVA_CLIENT_ID")
-STRAVA_CLIENT_SECRET = _env_values.get("STRAVA_CLIENT_SECRET")
+# load_dotenv (T-47, remplace dotenv_values) : peuple os.environ à partir
+# de .env s'il existe, ne fait RIEN si le fichier est absent (pas d'erreur)
+# — en local, .env porte ces 3 clés ; en production (Fly.io), il n'existe
+# pas dans l'image (jamais commité, cf .gitignore) et ce sont de vraies
+# variables d'environnement (`fly secrets set`) qui les fournissent déjà
+# dans os.environ. override=False par défaut : un vrai secret déjà
+# présent dans l'environnement gagnerait de toute façon face à un .env.
+load_dotenv(ENV_PATH)
+STRAVA_CLIENT_ID = os.environ.get("STRAVA_CLIENT_ID")
+STRAVA_CLIENT_SECRET = os.environ.get("STRAVA_CLIENT_SECRET")
 # Signe (pas chiffre) le cookie de session (T-45, SessionMiddleware) :
 # n'importe qui peut LIRE son contenu (juste du base64), mais pas le
 # FORGER sans cette clé — c'est pour ça qu'on n'y met jamais de tokens
 # Strava, seulement un user_id (voir storage/users.py pour les tokens).
-SESSION_SECRET_KEY = _env_values.get("SESSION_SECRET_KEY")
+SESSION_SECRET_KEY = os.environ.get("SESSION_SECRET_KEY")
 if not SESSION_SECRET_KEY:
     raise RuntimeError(
-        "SESSION_SECRET_KEY manquant dans .env — requis pour signer le cookie de session (T-45)"
+        "SESSION_SECRET_KEY manquant (.env en local, `fly secrets` en production) "
+        "— requis pour signer le cookie de session (T-45)"
     )
 
 STRAVA_AUTHORIZE_URL = "https://www.strava.com/oauth/authorize"

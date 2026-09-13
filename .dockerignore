@@ -1,0 +1,27 @@
+# T-47a : jamais dans l'image de production.
+
+# Données personnelles + secrets — pour data/, voir aussi le commentaire
+# du Dockerfile (le dossier est recréé vide, .gitignore l'exclut déjà du
+# contexte de build de toute façon, mais on le liste explicitement ici :
+# ce fichier documente aussi ce qu'on refuse SCIEMMENT d'embarquer).
+data/
+.env
+
+# App Streamlit héritée (T-29 -> T-36+, suppression différée) : l'image
+# ne sert que l'API FastAPI (api/main.py), pas app.py/pages/.
+app.py
+pages/
+.streamlit/
+
+# Pas nécessaires pour faire tourner l'app en production.
+tests/
+notebooks/
+docs/
+.git/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.duckdb
+*.duckdb.wal
