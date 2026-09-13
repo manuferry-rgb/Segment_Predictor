@@ -455,8 +455,33 @@ toute appli à plusieurs utilisateurs. Découpage validé avec l'auteur :
   correctement, la déconnexion aussi. `/predict`/`/segments`/
   `/wind-scan` branchés sur `request.session["user_id"]` juste après
   (T-44e, voir Phase 14 ci-dessus).
-- **T-46 — Ingestion à la demande** : remplacer les scripts CLI
+- **T-46 — Ingestion à la demande** ✅ remplace les scripts CLI
   mono-utilisateur par un flux déclenché après connexion.
+
+  - **T-46a** `get_valid_access_token_for_user` (ingest/strava_auth.py) :
+    équivalent de `get_valid_access_token`, mais le token vit dans
+    `users` (storage/users.py) et non dans `.env` — un par utilisateur,
+    `client_id`/`client_secret` restant ceux de l'app Strava partagée
+    par tout le monde.
+  - **T-46b** `POST /sync` (api/main.py) : réutilise les fonctions
+    `fetch_and_store_*` et `build_*_table` existantes, mais pilotées
+    par le token et les chemins bruts de l'utilisateur connecté plutôt
+    que par les constantes `.env` des scripts CLI. Exclut
+    délibérément météo/wellness : aucune n'est consommée par
+    calibrate/predict (vérifié par grep), les synchroniser à chaque
+    appel gaspillerait le quota Strava (partagé entre tous les
+    utilisateurs) sans aucun bénéfice. La réponse renvoie un flag
+    `*_quota_reached` par source pour que l'UI prévienne explicitement
+    plutôt que de laisser croire à une synchro complète.
+    Bouton "Synchroniser mes données" dans le topbar (`web/auth.js`),
+    désactivé pendant la requête, réutilise le `#status` de la page.
+
+    Testé en vrai (mon compte Strava réel) : 9 nouvelles sorties avec
+    capteur, 9 détails d'activité, 2 nouveaux segments favoris récupérés
+    en ~15s, `/segments` passé de 78 à 80, `/predict` inchangé (même
+    PR, `cp_watts` de calibration légèrement décalé — attendu, reflète
+    la nouvelle activité ingérée). Testé aussi via le vrai bouton dans
+    le navigateur (pas seulement `fetch()` en console).
 - **T-47 — Hébergement** : l'app tourne aujourd'hui uniquement en local
   (127.0.0.1) — prérequis bloquant pour que quelqu'un d'autre puisse
   réellement s'y connecter (callback OAuth accessible depuis Internet).
