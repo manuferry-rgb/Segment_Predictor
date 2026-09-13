@@ -360,3 +360,49 @@ de Streamlit (l'autre moitié de T-41) reste à faire séparément.
 page affiche le top 10 trié par vent favorable réel, avec le %
 d'alignement en colonne, clic sur une ligne -> segment présélectionné
 dans Kompass. Vérifié en vrai contre les 78 segments favoris.
+
+---
+
+## Phase 14 — Multi-utilisateur : connexion Strava pour d'autres personnes
+
+Changement de nature du projet (CLAUDE.md disait "mono-utilisateur,
+pas d'authentification, pas de multi-tenant" — à mettre à jour une fois
+la phase terminée). Objectif à terme : ~100 utilisateurs, chacun
+connecté à SON propre compte Strava, données isolées. Contraintes
+identifiées avant de commencer : le quota Strava (100 req/15min,
+1000/jour) est PAR APPLICATION, pas par utilisateur — partagé entre
+tout le monde ; DuckDB n'accepte qu'un seul writer à la fois (déjà vu
+en pratique, T-40) ; Strava impose l'affichage "Powered by Strava" pour
+toute appli à plusieurs utilisateurs. Découpage validé avec l'auteur :
+
+- **T-44a — table `users`** ✅ Un compte par athlète Strava connecté
+  (`storage/users.py`) : id = l'id athlète Strava lui-même (pas d'id
+  interne séparé), tokens, upsert (reconnexion/rafraîchissement ne
+  duplique jamais un compte). Table VIVANTE (upserts au fil du temps),
+  pas reconstruite depuis du Parquet comme le reste de storage/.
+- **T-44b — `user_id` sur les tables personnelles** : `activities`,
+  `streams`, `activity_weather`, `segment_efforts`, `wellness` (toutes
+  déjà 100% propres à un athlète) + migration des données existantes
+  (rattachées à l'auteur comme premier utilisateur).
+- **T-44c — séparation de `segments`** : `segments` reste partagée
+  (distance, tracé, KOM — des faits physiques identiques pour tout le
+  monde) ; `pr_seconds`/`pr_date`/`effort_count`, aujourd'hui stockés à
+  tort dans `segments` comme s'il n'y avait qu'un PR possible par
+  segment, déménagent vers une nouvelle `user_segment_stats`
+  (user_id, segment_id, ...) ; nouvelle `user_starred_segments`
+  (user_id, segment_id) remplace l'hypothèse actuelle "la table
+  `segments` = mes favoris".
+- **T-44d — chemins bruts par utilisateur** : `data/raw/.../<user_id>/`
+  plutôt qu'un dossier partagé — sinon la synchro d'un utilisateur
+  écraserait les fichiers d'un autre.
+- **T-44e — filtrage par utilisateur partout** : chaque requête de
+  `storage/`, `calibrate/`, `predict/`, `api/` doit filtrer par
+  utilisateur. Le plus gros morceau, le plus risqué (une requête
+  oubliée = fuite de données entre utilisateurs).
+- **T-45 — OAuth "Se connecter avec Strava"** : `/auth/strava/login` +
+  `/auth/strava/callback`, session par cookie signé, bouton dans l'UI.
+- **T-46 — Ingestion à la demande** : remplacer les scripts CLI
+  mono-utilisateur par un flux déclenché après connexion.
+- **T-47 — Hébergement** : l'app tourne aujourd'hui uniquement en local
+  (127.0.0.1) — prérequis bloquant pour que quelqu'un d'autre puisse
+  réellement s'y connecter (callback OAuth accessible depuis Internet).
