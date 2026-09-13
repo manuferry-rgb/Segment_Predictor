@@ -415,10 +415,19 @@ toute appli à plusieurs utilisateurs. Découpage validé avec l'auteur :
   documentée dans build_database.py. Fichiers bruts réels déplacés
   (1281 activités, 497 streams/détails, 78 segments, 1 wellness) sans
   perte, `build_database.py 16132599` revérifié identique.
-- **T-44e — filtrage par utilisateur partout** : chaque requête de
-  `storage/`, `calibrate/`, `predict/`, `api/` doit filtrer par
-  utilisateur. Le plus gros morceau, le plus risqué (une requête
-  oubliée = fuite de données entre utilisateurs).
+- **T-44e — filtrage par utilisateur partout** ✅ `/segments`,
+  `/predict`, `/wind-scan` lisent maintenant `request.session["user_id"]`
+  via `_require_user_id` (401 explicite si personne n'est connecté),
+  plus la constante `CURRENT_USER_ID` codée en dur (supprimée).
+  `scan_segments_for_today` (predict/wind_scan.py) prend désormais un
+  `user_id` et filtre via `user_starred_segments` — avant ce ticket,
+  "Segments du jour" affichait les favoris de TOUT LE MONDE, pas
+  seulement ceux de la personne connectée. `pages/1_Segments_du_jour.py`
+  (Streamlit, toujours mono-utilisateur) mis à jour pour le nouveau
+  paramètre requis, avec sa propre `CURRENT_USER_ID` (pas de session
+  côté Streamlit). Effet de bord découvert en testant : sans session,
+  `/segments` renvoyait 401 mais le menu déroulant restait vide sans
+  explication — `web/app.js` affiche maintenant l'erreur du serveur.
 - **T-45 — OAuth "Se connecter avec Strava"** ✅ `exchange_authorization_code`
   (ingest/strava_auth.py, seul point où Strava renvoie aussi le profil
   athlète) ; `/auth/strava/login` (redirige, pose un `state` CSRF en
@@ -443,10 +452,9 @@ toute appli à plusieurs utilisateurs. Découpage validé avec l'auteur :
   Vérifié en vrai (vraie autorisation Strava, pas un mock) : la page de
   consentement Strava affiche bien "Segment_Predictor" avec le bon
   scope, le callback crée la ligne dans `users`, `/auth/me` répond
-  correctement, la déconnexion aussi. `CURRENT_USER_ID` reste pour
-  l'instant codé en dur dans `/predict`/`/segments`/`/wind-scan` — les
-  brancher sur `request.session["user_id"]` (finir T-44e) est le
-  prochain morceau.
+  correctement, la déconnexion aussi. `/predict`/`/segments`/
+  `/wind-scan` branchés sur `request.session["user_id"]` juste après
+  (T-44e, voir Phase 14 ci-dessus).
 - **T-46 — Ingestion à la demande** : remplacer les scripts CLI
   mono-utilisateur par un flux déclenché après connexion.
 - **T-47 — Hébergement** : l'app tourne aujourd'hui uniquement en local

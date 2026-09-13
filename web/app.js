@@ -91,6 +91,15 @@ function computeRangeBar(predictedTimeS, meanTimeS, stdTimeS) {
 
 async function loadSegments() {
   const response = await fetch("/segments");
+  if (!response.ok) {
+    // Le cas normal ici (T-44e) : pas encore connecté, /segments répond
+    // 401 — sans ce message, le menu resterait vide sans explication
+    // (auth.js affiche déjà le bouton "Se connecter", mais ce menu-ci
+    // ne le répète pas).
+    const error = await response.json();
+    statusEl.textContent = `Erreur : ${error.detail}`;
+    return;
+  }
   const segments = await response.json();
   for (const segment of segments) {
     const option = document.createElement("option");

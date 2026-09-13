@@ -71,11 +71,6 @@ STRAVA_AUTHORIZE_URL = "https://www.strava.com/oauth/authorize"
 # les scripts d'ingestion CLI utilisent déjà pour un seul utilisateur.
 STRAVA_OAUTH_SCOPE = "read,activity:read_all"
 
-# TEMPORAIRE (T-44c) : encore utilisée par /predict, /segments,
-# /wind-scan tant que T-44e (finir de brancher la session partout)
-# n'est pas fait — /auth/* (T-45) utilise déjà la vraie session.
-CURRENT_USER_ID = 16132599
-
 # 300, pas 2000 (T-32, cf app.py) : chaque tirage simule TOUS les
 # tronçons du polyline, jusqu'à ~340 sur un long segment — 300 suffit à
 # stabiliser moyenne et écart-type (mesuré : <1s d'écart contre 2000
@@ -127,6 +122,21 @@ def _db_cursor() -> duckdb.DuckDBPyConnection:
     fonction, jamais `_connection` directement après ce point.
     """
     return _connection.cursor()
+
+
+def _require_user_id(request: Request) -> int:
+    """Utilisateur de LA SESSION (T-44e — remplace l'ancienne constante
+    `CURRENT_USER_ID` codée en dur, supprimée). 401 explicite si
+    personne n'est connecté, plutôt qu'une réponse vide ou un id
+    inventé (règle du projet : jamais de valeur par défaut silencieuse).
+    """
+    user_id = request.session.get("user_id")
+    if user_id is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Connecte-toi avec Strava (/auth/strava/login) d'abord.",
+        )
+    return user_id
 
 
 @app.get("/auth/strava/login")
@@ -236,22 +246,23 @@ class SegmentSummary(BaseModel):
 
 
 @app.get("/segments", response_model=list[SegmentSummary])
-def list_segments() -> list[SegmentSummary]:
+def list_segments(request: Request) -> list[SegmentSummary]:
     """Équivalent de load_segments() dans app.py, mais avec distance et
     D+ inclus directement : app.py les récupérait après coup (au moment
     du choix du segment), ici le frontend a besoin de tout d'un coup
     pour peindre la liste déroulante sans un second aller-retour.
 
-    Filtré aux favoris de CURRENT_USER_ID via `user_starred_segments`
-    (T-44c) — `segments` elle-même est partagée entre tous les
-    utilisateurs, sans ce filtre chacun verrait aussi les segments
-    favoris de tout le monde.
+    Filtré aux favoris de l'utilisateur CONNECTÉ via `user_starred_
+    segments` (T-44c/T-44e) — `segments` elle-même est partagée entre
+    tous les utilisateurs, sans ce filtre chacun verrait aussi les
+    segments favoris de tout le monde.
     """
+    user_id = _require_user_id(request)
     rows = _db_cursor().execute(
         "SELECT s.id, s.name, s.distance_m, s.total_elevation_gain_m FROM segments s "
         "JOIN user_starred_segments u ON u.segment_id = s.id "
         "WHERE u.user_id = ? ORDER BY s.name",
-        [CURRENT_USER_ID],
+        [user_id],
     ).fetchall()
     return [
         SegmentSummary(id=row[0], name=row[1], distance_m=row[2], elevation_gain_m=row[3])
@@ -382,7 +393,14 @@ class PredictResponse(BaseModel):
 # serveur pendant cet appel. "async def" ne serait utile qu'avec des
 # bibliothèques conçues pour ça (ex. httpx.AsyncClient), pas ici.
 @app.post("/predict", response_model=PredictResponse)
-def predict(request: PredictRequest) -> PredictResponse:
+def predict(request: PredictRequest, http_request: Request) -> PredictResponse:
+    # Deux paramètres "request" différents (nouveau piège, T-44e) :
+    # `request` est le corps JSON envoyé par le frontend (segment_id,
+    # etc.), `http_request` est LA requête HTTP elle-même, seule à
+    # porter la session — FastAPI les distingue par leur TYPE
+    # (PredictRequest vs Request), pas leur nom, mais un nom identique
+    # aurait été trompeur à la lecture.
+    user_id = _require_user_id(http_request)
     # Un seul curseur pour TOUTE la requête (voir _db_cursor) — pas un
     # nouveau à chaque appel : les appels de cette fonction sont
     # séquentiels sur le même thread, seul le PARTAGE entre requêtes
@@ -428,13 +446,10 @@ def predict(request: PredictRequest) -> PredictResponse:
     ).fetchone()
     # PR : table PAR ATHLÈTE depuis T-44c (segments.pr_seconds n'existe
     # plus, ce n'était jamais une propriété du segment lui-même — voir
-    # storage/segments.py). CURRENT_USER_ID reste un unique utilisateur
-    # en dur tant que T-45 (connexion Strava, session) n'est pas fait —
-    # chaque requête ici devra un jour utiliser l'utilisateur de LA
-    # session, pas cette constante (T-44e).
+    # storage/segments.py). `user_id` vient de LA SESSION (T-44e).
     pr_stats_row = conn.execute(
         "SELECT pr_seconds FROM user_segment_stats WHERE user_id = ? AND segment_id = ?",
-        [CURRENT_USER_ID, request.segment_id],
+        [user_id, request.segment_id],
     ).fetchone()
     pr_seconds = pr_stats_row[0] if pr_stats_row is not None else None
     chunk = SegmentChunk(0.0, distance_m, average_grade, heading_rad)
@@ -464,7 +479,7 @@ def predict(request: PredictRequest) -> PredictResponse:
             "SELECT id, average_watts, device_watts, start_date, activity_id "
             "FROM segment_efforts WHERE user_id = ? AND segment_id = ? AND elapsed_time_s = ? "
             "ORDER BY start_date DESC LIMIT 1",
-            [CURRENT_USER_ID, request.segment_id, pr_seconds],
+            [user_id, request.segment_id, pr_seconds],
         ).fetchone()
         effort_info = None
         if pr_effort_row is not None:
@@ -583,15 +598,16 @@ class WindOpportunity(BaseModel):
 
 
 @app.get("/wind-scan", response_model=list[WindOpportunity])
-def wind_scan() -> list[WindOpportunity]:
+def wind_scan(request: Request) -> list[WindOpportunity]:
     """Équivalent JSON de pages/1_Segments_du_jour.py (T-33/T-34) :
     aucune calibration CP/CdA/Crr, juste la géométrie de chaque segment
-    favori contre la météo du jour. Un appel Open-Meteo par segment
-    (scan_segments_for_today) — peut prendre plusieurs secondes selon le
-    nombre de segments favoris.
+    favori (de l'utilisateur CONNECTÉ, T-44e) contre la météo du jour.
+    Un appel Open-Meteo par segment (scan_segments_for_today) — peut
+    prendre plusieurs secondes selon le nombre de segments favoris.
     """
+    user_id = _require_user_id(request)
     with httpx.Client(timeout=30.0) as client:
-        opportunities = scan_segments_for_today(client, _db_cursor())
+        opportunities = scan_segments_for_today(client, _db_cursor(), user_id)
     return [
         WindOpportunity(
             segment_id=o.segment_id,

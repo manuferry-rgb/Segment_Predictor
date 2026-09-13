@@ -27,6 +27,11 @@ from segment_predictor.predict.wind_scan import scan_segments_for_today
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DUCKDB_PATH = PROJECT_ROOT / "data" / "segment_predictor.duckdb"
 
+# TEMPORAIRE (T-44e) : même constante que app.py — Streamlit n'a pas de
+# session (contrairement à l'API FastAPI, T-45), reste mono-utilisateur
+# jusqu'à sa suppression prévue (T-41).
+CURRENT_USER_ID = 16132599
+
 # Même convention que app.py/physics.py : direction D'OÙ VIENT le vent.
 _COMPASS_LABELS = ("N", "NE", "E", "SE", "S", "SO", "O", "NO")
 
@@ -58,7 +63,9 @@ conn = get_connection()
 if st.button("Scanner mes segments", type="primary"):
     with st.spinner("Récupération de la météo du jour pour chaque segment favori..."):
         with httpx.Client(timeout=30.0) as client:
-            opportunities = scan_segments_for_today(conn=conn, http_client=client)
+            opportunities = scan_segments_for_today(
+                conn=conn, http_client=client, user_id=CURRENT_USER_ID
+            )
     # Persisté (T-35) : le clic sur une ligne du tableau plus bas déclenche
     # lui aussi un rerun de tout le script (comportement Streamlit), pendant
     # lequel `st.button` redevient False — sans ce stockage, le tableau

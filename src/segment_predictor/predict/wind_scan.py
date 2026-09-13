@@ -101,14 +101,17 @@ def best_wind_opportunity_today(
 def scan_segments_for_today(
     http_client: httpx.Client,
     conn: duckdb.DuckDBPyConnection,
+    user_id: int,
     min_hour: int = DEFAULT_MIN_HOUR,
     max_hour: int = DEFAULT_MAX_HOUR,
     now: datetime | None = None,
 ) -> list[SegmentWindOpportunity]:
-    """Un appel météo (`forecast_days=1`) par segment favori, classé par
-    `average_tailwind_speed_ms` décroissante (le plus favorable en
-    premier — voir sa docstring pour pourquoi une vitesse réelle plutôt
-    qu'une fraction de distance).
+    """Un appel météo (`forecast_days=1`) par segment favori DE `user_id`
+    (T-44e — `segments` est partagée entre tous les utilisateurs depuis
+    T-44c, `user_starred_segments` filtre aux favoris de CETTE personne),
+    classé par `average_tailwind_speed_ms` décroissante (le plus
+    favorable en premier — voir sa docstring pour pourquoi une vitesse
+    réelle plutôt qu'une fraction de distance).
 
     Un segment dont le polyline dégénère en 0 tronçon exploitable
     (`segment_chunks_from_polyline`, ex. tous les points confondus) est
@@ -124,7 +127,10 @@ def scan_segments_for_today(
     today = now.date()
 
     rows = conn.execute(
-        "SELECT id, name, distance_m, average_grade, polyline, start_lat, start_lng FROM segments"
+        "SELECT s.id, s.name, s.distance_m, s.average_grade, s.polyline, s.start_lat, s.start_lng "
+        "FROM segments s JOIN user_starred_segments u ON u.segment_id = s.id "
+        "WHERE u.user_id = ?",
+        [user_id],
     ).fetchall()
 
     opportunities = []
