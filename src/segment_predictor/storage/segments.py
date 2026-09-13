@@ -61,6 +61,32 @@ def _read_raw_segments(raw_dir: Path) -> list[dict]:
     return [pq.read_table(path).to_pylist()[0] for path in sorted(raw_dir.glob("*.parquet"))]
 
 
+def _read_all_shared_raw_segments(segments_raw_dir: Path) -> list[dict]:
+    """`build_segments_table`, contrairement aux deux builders par
+    utilisateur (T-44c), doit voir TOUS les segments jamais téléchargés
+    par N'IMPORTE QUEL utilisateur — `segments_raw_dir` est ici le
+    dossier PARENT (`data/raw/strava_segments/`, T-44d), un niveau
+    au-dessus des sous-dossiers `<user_id>/` que lit `_read_raw_segments`.
+
+    Dédoublonné par id de segment : le même segment partagé peut
+    apparaître dans plusieurs sous-dossiers si plusieurs utilisateurs
+    l'ont en favori — son contenu physique (distance, tracé, KOM) étant
+    identique partout, prendre n'importe laquelle des copies suffit.
+
+    `segments_raw_dir` peut ne pas encore exister (aucun utilisateur n'a
+    jamais rien fetché) : liste vide plutôt qu'une erreur, même logique
+    que `build_wellness_table` pour une source pas encore alimentée.
+    """
+    if not segments_raw_dir.exists():
+        return []
+
+    by_id: dict[int, dict] = {}
+    for user_dir in sorted(p for p in segments_raw_dir.iterdir() if p.is_dir()):
+        for segment in _read_raw_segments(user_dir):
+            by_id[segment["id"]] = segment
+    return list(by_id.values())
+
+
 def _segment_to_row(raw_segment: dict) -> dict:
     """Un JSON brut `GET /segments/{id}` -> une ligne de `segments` — les
     faits PHYSIQUES seulement (T-44c) ; le PR de l'athlète qui a fait la
@@ -113,15 +139,21 @@ def _segment_to_row(raw_segment: dict) -> dict:
 
 
 def build_segments_table(conn: duckdb.DuckDBPyConnection, raw_dir: Path) -> None:
-    """Lit tous les segments bruts de `raw_dir` et (re)crée la table
-    PARTAGÉE `segments`.
+    """Lit tous les segments bruts (tous utilisateurs confondus, T-44d) et
+    (re)crée la table PARTAGÉE `segments`.
+
+    `raw_dir` est le dossier PARENT `data/raw/strava_segments/`, PAS un
+    sous-dossier `<user_id>/` (voir _read_all_shared_raw_segments) —
+    contrairement à `build_user_segment_stats_table`/
+    `build_user_starred_segments_table` ci-dessous, qui elles reçoivent
+    le sous-dossier d'UN SEUL utilisateur.
 
     CREATE OR REPLACE reste correct ici (contrairement aux tables
     personnelles de T-44b) : cette table ne contient que des faits
     physiques identiques pour tout le monde, il n'y a pas de lignes
     "d'un autre utilisateur" à préserver en la reconstruisant.
     """
-    rows = [_segment_to_row(segment) for segment in _read_raw_segments(raw_dir)]
+    rows = [_segment_to_row(segment) for segment in _read_all_shared_raw_segments(raw_dir)]
 
     segments_table = pa.Table.from_pylist(rows)
     conn.register("segments_table", segments_table)
@@ -155,6 +187,9 @@ def build_user_segment_stats_table(
     même raisonnement que les tables personnelles de T-44b, un autre
     utilisateur peut déjà avoir ses propres stats sur les MÊMES segments
     partagés.
+
+    `raw_dir` : le sous-dossier `<user_id>/` de CET utilisateur (T-44d),
+    pas le dossier parent que lit `build_segments_table`.
     """
     rows = [_segment_to_user_stats_row(segment, user_id) for segment in _read_raw_segments(raw_dir)]
 

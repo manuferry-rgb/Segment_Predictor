@@ -10,13 +10,13 @@ build_user_starred_segments_table).
 
 Vérifie d'abord ce qui est déjà sur disque : un segment déjà téléchargé
 n'est jamais redemandé à Strava. `segments` est reconstruite à partir de
-TOUS les segments bruts déjà présents (partagée, T-44c) ; les deux
-tables par utilisateur ne portent en revanche que ceux de `raw_dir`
-rattachés à `user_id`.
+TOUS les sous-dossiers utilisateur de `data/raw/strava_segments/`
+(partagée, T-44d) ; les deux tables par utilisateur ne portent en
+revanche que ceux du sous-dossier `<user_id>/` de CET utilisateur.
 
-`user_id` : requis, comme build_database.py (T-44b) — tant que T-44d
-(chemins bruts par utilisateur) n'est pas fait, `.env` ne porte qu'une
-seule identité Strava à la fois, donc un seul `user_id` a un sens ici.
+`user_id` : requis, comme build_database.py (T-44b) — sert aussi de nom
+de sous-dossier (T-44d), `.env` ne portant qu'une seule identité Strava
+à la fois tant que T-45 (connexion, session) n'est pas fait.
 
 Usage :
   uv run python scripts/fetch_segments.py <user_id>                    # tous les favoris
@@ -41,7 +41,7 @@ from segment_predictor.storage.segments import (
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-SEGMENTS_RAW_DIR = PROJECT_ROOT / "data" / "raw" / "strava_segments"
+SEGMENTS_RAW_DIR_ROOT = PROJECT_ROOT / "data" / "raw" / "strava_segments"
 DUCKDB_PATH = PROJECT_ROOT / "data" / "segment_predictor.duckdb"
 
 
@@ -51,6 +51,7 @@ def main() -> None:
         raise SystemExit(1)
     user_id = int(sys.argv[1])
     explicit_ids = [int(arg) for arg in sys.argv[2:]]
+    segments_raw_dir = SEGMENTS_RAW_DIR_ROOT / sys.argv[1]
 
     env_path = PROJECT_ROOT / ".env"
     with httpx.Client(timeout=30.0) as client:
@@ -62,7 +63,7 @@ def main() -> None:
             segment_ids = list_starred_segment_ids(client, access_token)
             print(f"{len(segment_ids)} segments favoris trouvés sur Strava")
 
-        summary = fetch_and_store_segments(client, access_token, segment_ids, SEGMENTS_RAW_DIR)
+        summary = fetch_and_store_segments(client, access_token, segment_ids, segments_raw_dir)
 
     print(f"Segments récupérés : {len(summary.fetched_ids)}")
     print(f"Déjà présents (sautés) : {len(summary.already_downloaded_ids)}")
@@ -75,9 +76,11 @@ def main() -> None:
     DUCKDB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = duckdb.connect(str(DUCKDB_PATH))
     try:
-        build_segments_table(conn, SEGMENTS_RAW_DIR)
-        build_user_segment_stats_table(conn, SEGMENTS_RAW_DIR, user_id=user_id)
-        build_user_starred_segments_table(conn, SEGMENTS_RAW_DIR, user_id=user_id)
+        # SEGMENTS_RAW_DIR_ROOT (parent, T-44d), pas segments_raw_dir : voir
+        # la docstring de build_segments_table.
+        build_segments_table(conn, SEGMENTS_RAW_DIR_ROOT)
+        build_user_segment_stats_table(conn, segments_raw_dir, user_id=user_id)
+        build_user_starred_segments_table(conn, segments_raw_dir, user_id=user_id)
         row_count = conn.execute("SELECT count(*) FROM segments").fetchone()[0]
     finally:
         conn.close()

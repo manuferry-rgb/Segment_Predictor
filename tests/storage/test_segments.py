@@ -44,9 +44,15 @@ def test_parse_strava_duration_rejects_invalid_format() -> None:
 # ---- build_segments_table -------------------------------------------------------------
 
 
-def _write_raw_segment(raw_dir, segment: dict, filename: str) -> None:
-    raw_dir.mkdir(parents=True, exist_ok=True)
-    pq.write_table(pa.Table.from_pylist([segment]), raw_dir / filename)
+def _write_raw_segment(raw_dir, segment: dict, filename: str, user_dir: str = "1") -> None:
+    """Écrit sous `raw_dir/<user_dir>/` (T-44d) : `build_segments_table`
+    lit maintenant TOUS les sous-dossiers utilisateur du dossier PARENT
+    `raw_dir` (voir _read_all_shared_raw_segments) — `user_dir` par
+    défaut ne compte pas pour ces tests (peu importe qui a fetché quoi,
+    seuls les faits physiques du segment sont vérifiés ici)."""
+    target_dir = raw_dir / user_dir
+    target_dir.mkdir(parents=True, exist_ok=True)
+    pq.write_table(pa.Table.from_pylist([segment]), target_dir / filename)
 
 
 def test_build_segments_table_parses_kom(tmp_path) -> None:
@@ -286,3 +292,31 @@ def test_build_segments_table_raises_when_latlng_missing(tmp_path) -> None:
     conn = duckdb.connect(":memory:")
     with pytest.raises(KeyError):
         build_segments_table(conn, raw_dir)
+
+
+def test_build_segments_table_combines_and_dedupes_across_user_subdirectories(tmp_path) -> None:
+    """T-44d : `raw_dir` est le dossier PARENT, un segment favori de
+    PLUSIEURS utilisateurs (deux sous-dossiers) ne doit compter qu'une
+    fois, et un segment propre à un seul utilisateur doit apparaître."""
+    raw_dir = tmp_path / "segments"
+    shared = {
+        "id": 1,
+        "name": "Segment partagé",
+        "distance": 1000.0,
+        "average_grade": 5.0,
+        "total_elevation_gain": 50.0,
+        "map": {"polyline": "fake_polyline"},
+        "start_latlng": [47.5, 7.4],
+        "end_latlng": [47.51, 7.41],
+        "xoms": {"kom": "1:00"},
+    }
+    only_b = {**shared, "id": 2, "name": "Segment de B uniquement"}
+    _write_raw_segment(raw_dir, shared, "1.parquet", user_dir="user_a")
+    _write_raw_segment(raw_dir, shared, "1.parquet", user_dir="user_b")
+    _write_raw_segment(raw_dir, only_b, "2.parquet", user_dir="user_b")
+
+    conn = duckdb.connect(":memory:")
+    build_segments_table(conn, raw_dir)
+
+    rows = conn.execute("SELECT id, name FROM segments ORDER BY id").fetchall()
+    assert rows == [(1, "Segment partagé"), (2, "Segment de B uniquement")]

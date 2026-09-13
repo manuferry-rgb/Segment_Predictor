@@ -403,9 +403,18 @@ toute appli à plusieurs utilisateurs. Découpage validé avec l'auteur :
   (les deux pages "Segments du jour") ne filtre pas encore par
   utilisateur — laissé pour T-44e (chaque requête, pas seulement
   celles touchées ici).
-- **T-44d — chemins bruts par utilisateur** : `data/raw/.../<user_id>/`
-  plutôt qu'un dossier partagé — sinon la synchro d'un utilisateur
-  écraserait les fichiers d'un autre.
+- **T-44d — chemins bruts par utilisateur** ✅ `data/raw/<source>/<user_id>/`
+  pour les 5 sources personnelles (activities, streams, segments,
+  activity_details, wellness) ; `open_meteo` reste à plat (zones
+  météo partagées, pas propres à un utilisateur). `build_segments_table`
+  lit maintenant TOUS les sous-dossiers utilisateur du dossier parent
+  (dédoublonné par id) pour construire la table partagée. Tous les
+  scripts de fetch prennent désormais `<user_id>` en argument.
+  `create_raw_views` (exploration seulement) ne reflète que le dernier
+  utilisateur pour lequel un script a tourné — limite assumée,
+  documentée dans build_database.py. Fichiers bruts réels déplacés
+  (1281 activités, 497 streams/détails, 78 segments, 1 wellness) sans
+  perte, `build_database.py 16132599` revérifié identique.
 - **T-44e — filtrage par utilisateur partout** : chaque requête de
   `storage/`, `calibrate/`, `predict/`, `api/` doit filtrer par
   utilisateur. Le plus gros morceau, le plus risqué (une requête
