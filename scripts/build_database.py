@@ -25,7 +25,11 @@ import duckdb
 from segment_predictor.storage.activities import build_activities_table
 from segment_predictor.storage.raw_views import create_raw_views
 from segment_predictor.storage.segment_efforts import build_segment_efforts_table
-from segment_predictor.storage.segments import build_segments_table
+from segment_predictor.storage.segments import (
+    build_segments_table,
+    build_user_segment_stats_table,
+    build_user_starred_segments_table,
+)
 from segment_predictor.storage.streams import build_streams_table
 from segment_predictor.storage.weather import build_activity_weather_table
 from segment_predictor.storage.wellness import build_wellness_table
@@ -61,6 +65,8 @@ def main() -> None:
         build_activities_table(conn, ACTIVITIES_RAW_DIR, user_id=user_id)
         build_streams_table(conn, STREAMS_RAW_DIR, user_id=user_id)
         build_segments_table(conn, SEGMENTS_RAW_DIR)
+        build_user_segment_stats_table(conn, SEGMENTS_RAW_DIR, user_id=user_id)
+        build_user_starred_segments_table(conn, SEGMENTS_RAW_DIR, user_id=user_id)
         # après activities : a besoin de main.activities pour savoir quelles
         # zones/dates interpoler. Pas de user_id ici (T-44b) : reconstruit
         # pour tous les utilisateurs déjà en base, cf sa docstring.
@@ -72,6 +78,8 @@ def main() -> None:
             "activities",
             "streams",
             "segments",
+            "user_segment_stats",
+            "user_starred_segments",
             "activity_weather",
             "segment_efforts",
             "wellness",

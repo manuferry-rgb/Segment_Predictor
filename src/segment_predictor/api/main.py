@@ -45,6 +45,13 @@ DUCKDB_PATH = PROJECT_ROOT / "data" / "segment_predictor.duckdb"
 CSV_PATH = PROJECT_ROOT / "annotations" / "draft_status.csv"
 WEB_DIR = PROJECT_ROOT / "web"
 
+# TEMPORAIRE (T-44c) : l'app reste mono-utilisateur en pratique jusqu'à
+# T-45 (connexion Strava, session par cookie) — aucune requête ici ne
+# sait encore "qui est connecté", donc on répond toujours pour ce seul
+# id (l'auteur). Chaque usage de cette constante est un endroit que
+# T-44e/T-45 devra remplacer par l'utilisateur de la session.
+CURRENT_USER_ID = 16132599
+
 # 300, pas 2000 (T-32, cf app.py) : chaque tirage simule TOUS les
 # tronçons du polyline, jusqu'à ~340 sur un long segment — 300 suffit à
 # stabiliser moyenne et écart-type (mesuré : <1s d'écart contre 2000
@@ -83,9 +90,17 @@ def list_segments() -> list[SegmentSummary]:
     D+ inclus directement : app.py les récupérait après coup (au moment
     du choix du segment), ici le frontend a besoin de tout d'un coup
     pour peindre la liste déroulante sans un second aller-retour.
+
+    Filtré aux favoris de CURRENT_USER_ID via `user_starred_segments`
+    (T-44c) — `segments` elle-même est partagée entre tous les
+    utilisateurs, sans ce filtre chacun verrait aussi les segments
+    favoris de tout le monde.
     """
     rows = _connection.execute(
-        "SELECT id, name, distance_m, total_elevation_gain_m FROM segments ORDER BY name"
+        "SELECT s.id, s.name, s.distance_m, s.total_elevation_gain_m FROM segments s "
+        "JOIN user_starred_segments u ON u.segment_id = s.id "
+        "WHERE u.user_id = ? ORDER BY s.name",
+        [CURRENT_USER_ID],
     ).fetchall()
     return [
         SegmentSummary(id=row[0], name=row[1], distance_m=row[2], elevation_gain_m=row[3])
@@ -252,11 +267,22 @@ def predict(request: PredictRequest) -> PredictResponse:
     # vent nul, donc un cap unique ne change rien à son résultat — pas la
     # peine d'y payer le coût du découpage par polyline (T-32) pour zéro
     # différence.
-    distance_m, average_grade, heading_rad, polyline, kom_seconds, pr_seconds = _connection.execute(
-        "SELECT distance_m, average_grade, heading_rad, polyline, kom_seconds, pr_seconds "
+    distance_m, average_grade, heading_rad, polyline, kom_seconds = _connection.execute(
+        "SELECT distance_m, average_grade, heading_rad, polyline, kom_seconds "
         "FROM segments WHERE id = ?",
         [request.segment_id],
     ).fetchone()
+    # PR : table PAR ATHLÈTE depuis T-44c (segments.pr_seconds n'existe
+    # plus, ce n'était jamais une propriété du segment lui-même — voir
+    # storage/segments.py). CURRENT_USER_ID reste un unique utilisateur
+    # en dur tant que T-45 (connexion Strava, session) n'est pas fait —
+    # chaque requête ici devra un jour utiliser l'utilisateur de LA
+    # session, pas cette constante (T-44e).
+    pr_stats_row = _connection.execute(
+        "SELECT pr_seconds FROM user_segment_stats WHERE user_id = ? AND segment_id = ?",
+        [CURRENT_USER_ID, request.segment_id],
+    ).fetchone()
+    pr_seconds = pr_stats_row[0] if pr_stats_row is not None else None
     chunk = SegmentChunk(0.0, distance_m, average_grade, heading_rad)
     pacing_result = optimize_pacing(
         [chunk],
@@ -282,9 +308,9 @@ def predict(request: PredictRequest) -> PredictResponse:
         # directe possible (même limite que app.py).
         pr_effort_row = _connection.execute(
             "SELECT id, average_watts, device_watts, start_date, activity_id "
-            "FROM segment_efforts WHERE segment_id = ? AND elapsed_time_s = ? "
+            "FROM segment_efforts WHERE user_id = ? AND segment_id = ? AND elapsed_time_s = ? "
             "ORDER BY start_date DESC LIMIT 1",
-            [request.segment_id, pr_seconds],
+            [CURRENT_USER_ID, request.segment_id, pr_seconds],
         ).fetchone()
         effort_info = None
         if pr_effort_row is not None:

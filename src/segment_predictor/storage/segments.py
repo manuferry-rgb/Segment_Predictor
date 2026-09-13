@@ -1,15 +1,16 @@
-"""Construction de la table DuckDB `segments` à partir des JSON bruts Strava.
+"""Construction des tables DuckDB dérivées des JSON bruts Strava de segments.
 
-C'est ici, pas dans ingest, que le format "mm:ss" / "h:mm:ss" du KOM
-(`xoms.kom`) est parsé en secondes. `athlete_segment_stats.pr_elapsed_time`
-est en revanche déjà un entier côté Strava — pas de parsing nécessaire.
+`segments` (T-06) reste PARTAGÉE entre tous les utilisateurs (T-44c) :
+distance, tracé, cap, KOM — des faits physiques identiques pour
+n'importe qui regarde ce segment. `user_segment_stats` et
+`user_starred_segments`, elles, sont PAR ATHLÈTE : le PR
+(`athlete_segment_stats`) reflète le token qui a fait la requête
+`GET /segments/{id}`, pas une propriété du segment lui-même — avant
+T-44c, il vivait à tort dans `segments`, comme s'il n'y avait qu'un
+PR possible par segment.
 
-Aucune valeur par défaut silencieuse pour ce qui est structurel : un
-segment dont le JSON brut ne contient pas `xoms.kom` ou
-`athlete_segment_stats` fait lever une exception explicite. En revanche
-`pr_elapsed_time`/`pr_date` peuvent légitimement être `null` — Strava
-renvoie `athlete_segment_stats` avec `effort_count: 0` pour un segment
-favori jamais roulé, ce n'est pas une anomalie mais un vrai NULL.
+C'est aussi ici, pas dans ingest, que le format "mm:ss" / "h:mm:ss" du
+KOM (`xoms.kom`) est parsé en secondes.
 """
 
 import re
@@ -46,15 +47,26 @@ def parse_strava_duration(value: str) -> int:
     return hours * 3600 + minutes * 60 + seconds
 
 
-def _segment_to_row(raw_segment: dict) -> dict:
-    """Un JSON brut `GET /segments/{id}` -> une ligne de la table `segments`.
-
-    `athlete_segment_stats` doit exister (sinon la réponse est vraiment
-    anormale), mais ses champs `pr_*` peuvent être `None` : Strava renvoie
-    ça pour un segment jamais roulé (`effort_count: 0`), ce n'est pas une
-    erreur à masquer, juste un PR qui n'existe pas encore.
+def _read_raw_segments(raw_dir: Path) -> list[dict]:
+    """Chaque fichier est lu individuellement (pas via un `pyarrow.dataset`
+    sur tout le dossier) : les champs absents pour un segment donné
+    (ex. `athlete_segment_stats.pr_elapsed_time` jamais renseigné) font
+    inférer un type `null` à pyarrow pour CE fichier, incompatible avec
+    le type réel (`int64`) inféré pour un autre fichier où le champ est
+    renseigné — `pyarrow.dataset` refuse alors de les lire ensemble.
+    Extraire d'abord chaque ligne en dict Python puis reconstruire une
+    seule table à la fin évite complètement ce problème. Partagée par
+    les trois builders de ce module : ils lisent tous la même source.
     """
-    stats = raw_segment["athlete_segment_stats"]
+    return [pq.read_table(path).to_pylist()[0] for path in sorted(raw_dir.glob("*.parquet"))]
+
+
+def _segment_to_row(raw_segment: dict) -> dict:
+    """Un JSON brut `GET /segments/{id}` -> une ligne de `segments` — les
+    faits PHYSIQUES seulement (T-44c) ; le PR de l'athlète qui a fait la
+    requête vit dans `user_segment_stats`, pas ici (voir docstring du
+    module).
+    """
     start_lat, start_lng = raw_segment["start_latlng"]
     end_lat, end_lng = raw_segment["end_latlng"]
     return {
@@ -94,32 +106,22 @@ def _segment_to_row(raw_segment: dict) -> dict:
         # précis pour une grille météo bien plus large qu'un segment.
         "start_lat": start_lat,
         "start_lng": start_lng,
+        # Record ABSOLU (tous athlètes confondus) : un vrai fait partagé,
+        # contrairement au PR ci-dessous (par athlète, T-44c).
         "kom_seconds": parse_strava_duration(raw_segment["xoms"]["kom"]),
-        "pr_seconds": stats.get("pr_elapsed_time"),
-        "pr_date": stats.get("pr_date"),
-        "effort_count": stats.get("effort_count"),
     }
 
 
 def build_segments_table(conn: duckdb.DuckDBPyConnection, raw_dir: Path) -> None:
-    """Lit tous les segments bruts de `raw_dir` et (re)crée la table `segments`.
+    """Lit tous les segments bruts de `raw_dir` et (re)crée la table
+    PARTAGÉE `segments`.
 
-    Chaque fichier est lu individuellement (pas via un `pyarrow.dataset`
-    sur tout le dossier) : les champs absents pour un segment donné
-    (ex. `athlete_segment_stats.pr_elapsed_time` jamais renseigné) font
-    inférer un type `null` à pyarrow pour CE fichier, incompatible avec
-    le type réel (`int64`) inféré pour un autre fichier où le champ est
-    renseigné — `pyarrow.dataset` refuse alors de les lire ensemble.
-    Extraire d'abord chaque ligne en dict Python puis reconstruire une
-    seule table à la fin (schéma volontairement restreint aux colonnes
-    qu'on garde) évite complètement ce problème.
-
-    `conn.register` expose ensuite cette table pyarrow à DuckDB sous un
-    nom SQL, sans passer par un fichier intermédiaire.
+    CREATE OR REPLACE reste correct ici (contrairement aux tables
+    personnelles de T-44b) : cette table ne contient que des faits
+    physiques identiques pour tout le monde, il n'y a pas de lignes
+    "d'un autre utilisateur" à préserver en la reconstruisant.
     """
-    segment_paths = sorted(raw_dir.glob("*.parquet"))
-    raw_segments = [pq.read_table(path).to_pylist()[0] for path in segment_paths]
-    rows = [_segment_to_row(segment) for segment in raw_segments]
+    rows = [_segment_to_row(segment) for segment in _read_raw_segments(raw_dir)]
 
     segments_table = pa.Table.from_pylist(rows)
     conn.register("segments_table", segments_table)
@@ -127,3 +129,79 @@ def build_segments_table(conn: duckdb.DuckDBPyConnection, raw_dir: Path) -> None
         conn.execute("CREATE OR REPLACE TABLE segments AS SELECT * FROM segments_table")
     finally:
         conn.unregister("segments_table")
+
+
+def _segment_to_user_stats_row(raw_segment: dict, user_id: int) -> dict:
+    """`athlete_segment_stats` doit exister (sinon la réponse est vraiment
+    anormale), mais ses champs `pr_*` peuvent être `None` : Strava renvoie
+    ça pour un segment jamais roulé (`effort_count: 0`), ce n'est pas une
+    erreur à masquer, juste un PR qui n'existe pas encore.
+    """
+    stats = raw_segment["athlete_segment_stats"]
+    return {
+        "user_id": user_id,
+        "segment_id": raw_segment["id"],
+        "pr_seconds": stats.get("pr_elapsed_time"),
+        "pr_date": stats.get("pr_date"),
+        "effort_count": stats.get("effort_count"),
+    }
+
+
+def build_user_segment_stats_table(
+    conn: duckdb.DuckDBPyConnection, raw_dir: Path, user_id: int
+) -> None:
+    """(Re)rattache à `user_id` le PR/nombre de passages de chaque segment
+    de `raw_dir` — DELETE puis INSERT (T-44b/T-44c), pas CREATE OR REPLACE :
+    même raisonnement que les tables personnelles de T-44b, un autre
+    utilisateur peut déjà avoir ses propres stats sur les MÊMES segments
+    partagés.
+    """
+    rows = [_segment_to_user_stats_row(segment, user_id) for segment in _read_raw_segments(raw_dir)]
+
+    stats_table = pa.Table.from_pylist(rows)
+    conn.register("user_segment_stats_table", stats_table)
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS user_segment_stats AS "
+            "SELECT * FROM user_segment_stats_table WHERE FALSE"
+        )
+        conn.execute("DELETE FROM user_segment_stats WHERE user_id = ?", [user_id])
+        conn.execute("INSERT INTO user_segment_stats SELECT * FROM user_segment_stats_table")
+    finally:
+        conn.unregister("user_segment_stats_table")
+
+
+def build_user_starred_segments_table(
+    conn: duckdb.DuckDBPyConnection, raw_dir: Path, user_id: int
+) -> None:
+    """(Re)construit la liste des segments "connus" de `user_id` — dans
+    l'usage normal (`fetch_segments.py` sans argument, T-06), ce sont
+    exactement ses favoris Strava (`GET /segments/starred`). Si
+    `fetch_segments.py` a été appelé avec des ids explicites (usage de
+    test/ciblage documenté dans sa propre docstring), un segment non
+    favori peut aussi s'y trouver — limite ASSUMÉE, pas cachée : `raw_dir`
+    ne porte aucun signal permettant de distinguer les deux cas.
+
+    DELETE puis INSERT par `user_id`, même raisonnement que
+    `build_user_segment_stats_table` ci-dessus.
+    """
+    rows = [
+        {"user_id": user_id, "segment_id": segment["id"]}
+        for segment in _read_raw_segments(raw_dir)
+    ]
+
+    starred_table = pa.Table.from_pylist(
+        rows, schema=pa.schema([("user_id", pa.int64()), ("segment_id", pa.int64())])
+    )
+    conn.register("user_starred_segments_table", starred_table)
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS user_starred_segments AS "
+            "SELECT * FROM user_starred_segments_table WHERE FALSE"
+        )
+        conn.execute("DELETE FROM user_starred_segments WHERE user_id = ?", [user_id])
+        conn.execute(
+            "INSERT INTO user_starred_segments SELECT * FROM user_starred_segments_table"
+        )
+    finally:
+        conn.unregister("user_starred_segments_table")

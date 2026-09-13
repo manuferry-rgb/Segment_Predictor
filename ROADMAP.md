@@ -389,14 +389,20 @@ toute appli à plusieurs utilisateurs. Découpage validé avec l'auteur :
   existantes faites (`ALTER TABLE ... ADD COLUMN user_id DEFAULT
   16132599` sur les 5 tables, comptages identiques avant/après
   reconstruction complète via `build_database.py`).
-- **T-44c — séparation de `segments`** : `segments` reste partagée
-  (distance, tracé, KOM — des faits physiques identiques pour tout le
-  monde) ; `pr_seconds`/`pr_date`/`effort_count`, aujourd'hui stockés à
-  tort dans `segments` comme s'il n'y avait qu'un PR possible par
-  segment, déménagent vers une nouvelle `user_segment_stats`
-  (user_id, segment_id, ...) ; nouvelle `user_starred_segments`
-  (user_id, segment_id) remplace l'hypothèse actuelle "la table
-  `segments` = mes favoris".
+- **T-44c — séparation de `segments`** ✅ `segments` reste partagée
+  (distance, tracé, KOM). `pr_seconds`/`pr_date`/`effort_count`
+  déménagés vers `user_segment_stats` (user_id, segment_id, ...) ;
+  nouvelle `user_starred_segments` (user_id, segment_id) remplace
+  l'hypothèse "`segments` = mes favoris" — `api/main.py:list_segments`
+  et `app.py:load_segments` filtrent maintenant par ce JOIN. Migration
+  faite (nouvelles tables construites depuis les JSON bruts existants,
+  vérifiées identiques aux anciennes colonnes, colonnes PR supprimées
+  de `segments`). `CURRENT_USER_ID` (constante en dur, api/main.py et
+  app.py) : pont temporaire jusqu'à T-45 — pas encore de session, donc
+  pas encore "l'utilisateur connecté" au sens propre. `predict/wind_scan.py`
+  (les deux pages "Segments du jour") ne filtre pas encore par
+  utilisateur — laissé pour T-44e (chaque requête, pas seulement
+  celles touchées ici).
 - **T-44d — chemins bruts par utilisateur** : `data/raw/.../<user_id>/`
   plutôt qu'un dossier partagé — sinon la synchro d'un utilisateur
   écraserait les fichiers d'un autre.

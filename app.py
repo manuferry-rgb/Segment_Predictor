@@ -34,6 +34,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 DUCKDB_PATH = PROJECT_ROOT / "data" / "segment_predictor.duckdb"
 CSV_PATH = PROJECT_ROOT / "annotations" / "draft_status.csv"
 
+# TEMPORAIRE (T-44c) : app.py n'a jamais eu de notion d'utilisateur —
+# maintenant que le PR vit dans user_segment_stats (par athlète, plus
+# dans segments), il faut bien un id pour le lire. app.py restant
+# mono-utilisateur (Streamlit, pas de session), c'est toujours le tien.
+CURRENT_USER_ID = 16132599
+
 DEFAULT_MASS_KG = 91.0
 # 300, pas 2000 (T-32) : chaque tirage simule TOUS les tronçons du
 # polyline (segment_chunks_from_polyline), pas un seul comme avant —
@@ -139,7 +145,15 @@ def get_connection() -> duckdb.DuckDBPyConnection:
 @st.cache_data
 def load_segments() -> list[tuple[int, str]]:
     conn = get_connection()
-    return conn.execute("SELECT id, name FROM segments ORDER BY name").fetchall()
+    # Filtré aux favoris de CURRENT_USER_ID (T-44c) — `segments` est
+    # partagée entre utilisateurs, `user_starred_segments` porte les
+    # favoris de chacun (même filtre que api/main.py:list_segments).
+    return conn.execute(
+        "SELECT s.id, s.name FROM segments s "
+        "JOIN user_starred_segments u ON u.segment_id = s.id "
+        "WHERE u.user_id = ? ORDER BY s.name",
+        [CURRENT_USER_ID],
+    ).fetchall()
 
 
 st.set_page_config(page_title="Kompass", page_icon="🚴")
@@ -288,11 +302,18 @@ if st.button("Chercher la meilleure fenêtre", type="primary"):
         st.warning("Aucun créneau exploitable sur les 10 prochains jours (6h-21h).")
         st.stop()
 
-    distance_m, average_grade, heading_rad, polyline, kom_seconds, pr_seconds = conn.execute(
-        "SELECT distance_m, average_grade, heading_rad, polyline, kom_seconds, pr_seconds "
+    distance_m, average_grade, heading_rad, polyline, kom_seconds = conn.execute(
+        "SELECT distance_m, average_grade, heading_rad, polyline, kom_seconds "
         "FROM segments WHERE id = ?",
         [segment_id],
     ).fetchone()
+    # PR : table par athlète depuis T-44c (segments.pr_seconds n'existe
+    # plus, voir storage/segments.py).
+    pr_stats_row = conn.execute(
+        "SELECT pr_seconds FROM user_segment_stats WHERE user_id = ? AND segment_id = ?",
+        [CURRENT_USER_ID, segment_id],
+    ).fetchone()
+    pr_seconds = pr_stats_row[0] if pr_stats_row is not None else None
     # Un seul tronçon (pacing, T-26) : le vent n'y entre pas du tout
     # (optimize_pacing simule à vent nul), donc un cap unique ne change
     # rien à son résultat — pas la peine d'y payer le coût des ~340
@@ -379,9 +400,9 @@ if st.button("Chercher la meilleure fenêtre", type="primary"):
         # donc pas de jointure directe.
         pr_effort_row = conn.execute(
             "SELECT id, average_watts, device_watts, start_date, activity_id "
-            "FROM segment_efforts WHERE segment_id = ? AND elapsed_time_s = ? "
+            "FROM segment_efforts WHERE user_id = ? AND segment_id = ? AND elapsed_time_s = ? "
             "ORDER BY start_date DESC LIMIT 1",
-            [segment_id, pr_seconds],
+            [CURRENT_USER_ID, segment_id, pr_seconds],
         ).fetchone()
         pr_extra_lines = []
         if pr_effort_row is not None:
