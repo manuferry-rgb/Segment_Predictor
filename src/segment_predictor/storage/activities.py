@@ -40,7 +40,7 @@ def _extract_start_latlng(raw_activity: dict) -> tuple[float | None, float | Non
     return lat, lng
 
 
-def _activity_to_row(raw_activity: dict) -> dict:
+def _activity_to_row(raw_activity: dict, user_id: int) -> dict:
     start_lat, start_lng = _extract_start_latlng(raw_activity)
     return {
         "id": raw_activity["id"],
@@ -59,15 +59,24 @@ def _activity_to_row(raw_activity: dict) -> dict:
         "average_cadence": raw_activity.get("average_cadence"),
         "start_lat": start_lat,
         "start_lng": start_lng,
+        "user_id": user_id,
     }
 
 
-def build_activities_table(conn: duckdb.DuckDBPyConnection, raw_dir: Path) -> None:
+def build_activities_table(conn: duckdb.DuckDBPyConnection, raw_dir: Path, user_id: int) -> None:
     """Lit toutes les activités brutes de `raw_dir` (potentiellement plusieurs
-    fichiers datés, un par lancement de T-04) et (re)crée la table `activities`.
+    fichiers datés, un par lancement de T-04) et les rattache à `user_id`.
+
+    DELETE puis INSERT (T-44b, multi-utilisateur), pas CREATE OR REPLACE
+    comme avant : un CREATE OR REPLACE effacerait aussi les activités déjà
+    en base pour les AUTRES utilisateurs — `raw_dir` ne contient que les
+    activités de CET utilisateur (T-44d), la table, elle, en contient
+    plusieurs. `CREATE TABLE IF NOT EXISTS ... WHERE FALSE` ne crée le
+    schéma que la toute première fois (base neuve) ; sinon la table
+    existe déjà avec sa colonne `user_id`.
     """
     rows = [
-        _activity_to_row(raw_activity)
+        _activity_to_row(raw_activity, user_id)
         for path in sorted(raw_dir.glob("*.parquet"))
         for raw_activity in pq.read_table(path).to_pylist()
     ]
@@ -75,6 +84,10 @@ def build_activities_table(conn: duckdb.DuckDBPyConnection, raw_dir: Path) -> No
     activities_table = pa.Table.from_pylist(rows)
     conn.register("activities_table", activities_table)
     try:
-        conn.execute("CREATE OR REPLACE TABLE activities AS SELECT * FROM activities_table")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS activities AS SELECT * FROM activities_table WHERE FALSE"
+        )
+        conn.execute("DELETE FROM activities WHERE user_id = ?", [user_id])
+        conn.execute("INSERT INTO activities SELECT * FROM activities_table")
     finally:
         conn.unregister("activities_table")

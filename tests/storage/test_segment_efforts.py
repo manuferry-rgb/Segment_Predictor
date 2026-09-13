@@ -1,4 +1,5 @@
-"""Tests de la construction de la table DuckDB `segment_efforts` (T-07b).
+"""Tests de la construction de la table DuckDB `segment_efforts` (T-07b,
+T-44b pour `user_id`).
 
 Extrait les efforts embarqués dans les activités détaillées — tous les
 segments publics croisés, pas seulement ceux suivis dans `main.segments`
@@ -11,6 +12,9 @@ import pyarrow.parquet as pq
 import pytest
 
 from segment_predictor.storage.segment_efforts import build_segment_efforts_table
+
+_USER_ID = 1
+_OTHER_USER_ID = 2
 
 
 def _write_activity_detail(
@@ -49,15 +53,15 @@ def test_build_segment_efforts_table_extracts_efforts(tmp_path) -> None:
     )
 
     conn = duckdb.connect(":memory:")
-    build_segment_efforts_table(conn, raw_dir)
+    build_segment_efforts_table(conn, raw_dir, user_id=_USER_ID)
 
     row = conn.execute(
         "SELECT id, segment_id, activity_id, elapsed_time_s, moving_time_s, distance_m, "
-        "average_watts, device_watts, average_heartrate, pr_rank, kom_rank "
+        "average_watts, device_watts, average_heartrate, pr_rank, kom_rank, user_id "
         "FROM segment_efforts"
     ).fetchone()
 
-    assert row == (1, 7722237, 11900338473, 506, 506, 4649.0, 187.1, True, 75.9, 1, None)
+    assert row == (1, 7722237, 11900338473, 506, 506, 4649.0, 187.1, True, 75.9, 1, None, _USER_ID)
 
 
 def test_build_segment_efforts_table_combines_multiple_activities(tmp_path) -> None:
@@ -78,7 +82,7 @@ def test_build_segment_efforts_table_combines_multiple_activities(tmp_path) -> N
     )
 
     conn = duckdb.connect(":memory:")
-    build_segment_efforts_table(conn, raw_dir)
+    build_segment_efforts_table(conn, raw_dir, user_id=_USER_ID)
 
     count = conn.execute("SELECT count(*) FROM segment_efforts").fetchone()[0]
     assert count == 3
@@ -90,7 +94,7 @@ def test_build_segment_efforts_table_ignores_activities_without_efforts(tmp_path
     _write_activity_detail(raw_dir, 2, {"id": 2})  # clé absente : jamais matché aucun segment
 
     conn = duckdb.connect(":memory:")
-    build_segment_efforts_table(conn, raw_dir)
+    build_segment_efforts_table(conn, raw_dir, user_id=_USER_ID)
 
     count = conn.execute("SELECT count(*) FROM segment_efforts").fetchone()[0]
     assert count == 0
@@ -119,7 +123,7 @@ def test_build_segment_efforts_table_allows_null_optional_metrics(tmp_path) -> N
     )
 
     conn = duckdb.connect(":memory:")
-    build_segment_efforts_table(conn, raw_dir)
+    build_segment_efforts_table(conn, raw_dir, user_id=_USER_ID)
 
     row = conn.execute(
         "SELECT average_watts, average_heartrate, pr_rank FROM segment_efforts"
@@ -135,18 +139,38 @@ def test_build_segment_efforts_table_raises_when_core_field_missing(tmp_path) ->
 
     conn = duckdb.connect(":memory:")
     with pytest.raises(KeyError):
-        build_segment_efforts_table(conn, raw_dir)
+        build_segment_efforts_table(conn, raw_dir, user_id=_USER_ID)
 
 
-def test_build_segment_efforts_table_replaces_existing_table(tmp_path) -> None:
+def test_build_segment_efforts_table_resync_replaces_only_that_users_rows(tmp_path) -> None:
     raw_dir = tmp_path / "details"
     _write_activity_detail(
         raw_dir, 1, {"id": 1, "segment_efforts": [_real_shaped_effort(1, 7722237, 1)]}
     )
 
     conn = duckdb.connect(":memory:")
-    build_segment_efforts_table(conn, raw_dir)
-    build_segment_efforts_table(conn, raw_dir)
+    build_segment_efforts_table(conn, raw_dir, user_id=_USER_ID)
+    build_segment_efforts_table(conn, raw_dir, user_id=_USER_ID)
 
     count = conn.execute("SELECT count(*) FROM segment_efforts").fetchone()[0]
     assert count == 1
+
+
+def test_build_segment_efforts_table_does_not_erase_another_users_rows(tmp_path) -> None:
+    """Cas critique du multi-utilisateur (T-44b) : synchroniser
+    l'utilisateur B ne doit rien effacer des efforts déjà en base pour A."""
+    raw_dir_a = tmp_path / "details_a"
+    raw_dir_b = tmp_path / "details_b"
+    _write_activity_detail(
+        raw_dir_a, 1, {"id": 1, "segment_efforts": [_real_shaped_effort(1, 7722237, 1)]}
+    )
+    _write_activity_detail(
+        raw_dir_b, 2, {"id": 2, "segment_efforts": [_real_shaped_effort(2, 7722237, 2)]}
+    )
+
+    conn = duckdb.connect(":memory:")
+    build_segment_efforts_table(conn, raw_dir_a, user_id=_USER_ID)
+    build_segment_efforts_table(conn, raw_dir_b, user_id=_OTHER_USER_ID)
+
+    rows = conn.execute("SELECT id, user_id FROM segment_efforts ORDER BY id").fetchall()
+    assert rows == [(1, _USER_ID), (2, _OTHER_USER_ID)]

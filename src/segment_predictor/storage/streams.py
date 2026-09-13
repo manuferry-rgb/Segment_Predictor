@@ -37,10 +37,13 @@ _COLUMN_NAMES = (
     "distance_m",
     "heartrate",
     "cadence",
+    "user_id",
 )
 
 
-def _activity_streams_to_columns(activity_id: int, raw_streams: dict) -> dict[str, list]:
+def _activity_streams_to_columns(
+    activity_id: int, raw_streams: dict, user_id: int
+) -> dict[str, list]:
     """Un JSON brut de streams (1 activité) -> des colonnes alignées, format long."""
     time_stream = raw_streams.get("time")
     if time_stream is None:
@@ -83,29 +86,38 @@ def _activity_streams_to_columns(activity_id: int, raw_streams: dict) -> dict[st
     }
     for column_name, raw_key in _SIMPLE_STREAM_KEYS.items():
         columns[column_name] = _aligned_column(column_name, raw_key)
+    columns["user_id"] = [user_id] * n
     return columns
 
 
-def build_streams_table(conn: duckdb.DuckDBPyConnection, raw_dir: Path) -> None:
-    """Lit tous les streams bruts de `raw_dir` et (re)crée la table `streams`.
+def build_streams_table(conn: duckdb.DuckDBPyConnection, raw_dir: Path, user_id: int) -> None:
+    """Lit tous les streams bruts de `raw_dir` et les rattache à `user_id`.
 
     Construction colonnaire (plutôt qu'une liste de dicts par ligne) :
     à l'échelle réelle du projet (~2,15M échantillons), c'est nettement
     moins coûteux en mémoire et en temps que `Table.from_pylist` sur
     autant de lignes.
+
+    DELETE puis INSERT (T-44b, multi-utilisateur), pas CREATE OR REPLACE
+    comme avant — voir la docstring de build_activities_table pour le
+    raisonnement complet, identique ici.
     """
     columns: dict[str, list] = {name: [] for name in _COLUMN_NAMES}
 
     for path in sorted(raw_dir.glob("*.parquet")):
         activity_id = int(path.stem)
         raw_streams = pq.read_table(path).to_pylist()[0]
-        activity_columns = _activity_streams_to_columns(activity_id, raw_streams)
+        activity_columns = _activity_streams_to_columns(activity_id, raw_streams, user_id)
         for name in _COLUMN_NAMES:
             columns[name].extend(activity_columns[name])
 
     streams_table = pa.table(columns)
     conn.register("streams_table", streams_table)
     try:
-        conn.execute("CREATE OR REPLACE TABLE streams AS SELECT * FROM streams_table")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS streams AS SELECT * FROM streams_table WHERE FALSE"
+        )
+        conn.execute("DELETE FROM streams WHERE user_id = ?", [user_id])
+        conn.execute("INSERT INTO streams SELECT * FROM streams_table")
     finally:
         conn.unregister("streams_table")

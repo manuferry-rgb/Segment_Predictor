@@ -87,15 +87,25 @@ def build_activity_weather_table(conn: duckdb.DuckDBPyConnection, weather_raw_di
     course à pied sont hors du périmètre du projet (prédiction de temps
     cycliste), pas la peine de les enrichir même si leur zone est déjà là.
     """
+    # `user_id` vient directement de `activities` (déjà rattachée à un
+    # utilisateur, T-44b) — cette fonction, elle, n'a PAS besoin d'un
+    # paramètre `user_id` : elle relit TOUTE la table `activities` (tous
+    # utilisateurs confondus) et la reconstruit en entier à chaque appel,
+    # contrairement à build_activities_table et consorts qui lisent un
+    # dossier brut PAR utilisateur. Un CREATE OR REPLACE ici recalcule
+    # donc correctement le résultat pour tout le monde, sans risque
+    # d'effacer les lignes d'un autre utilisateur (il n'y en a pas
+    # "d'autres" au sens d'un appel séparé : un seul appel couvre tous
+    # les utilisateurs déjà présents dans `activities`).
     activities = conn.execute(
-        "SELECT id, start_date, start_lat, start_lng FROM activities "
+        "SELECT id, user_id, start_date, start_lat, start_lng FROM activities "
         "WHERE start_lat IS NOT NULL AND start_lng IS NOT NULL "
         "AND type IN ('Ride', 'VirtualRide')"
     ).fetchall()
 
     zone_weather_cache: dict[tuple[float, float], dict | None] = {}
     rows = []
-    for activity_id, start_date, lat, lng in activities:
+    for activity_id, user_id, start_date, lat, lng in activities:
         key = zone_key(lat, lng)
         if key not in zone_weather_cache:
             file_path = weather_raw_dir / zone_filename(*key)
@@ -109,6 +119,7 @@ def build_activity_weather_table(conn: duckdb.DuckDBPyConnection, weather_raw_di
 
         row = _interpolate_activity_weather(activity_id, start_date, raw_weather)
         if row is not None:
+            row["user_id"] = user_id
             rows.append(row)
 
     weather_table = pa.Table.from_pylist(
@@ -121,6 +132,7 @@ def build_activity_weather_table(conn: duckdb.DuckDBPyConnection, weather_raw_di
                 ("pressure_pa", pa.float64()),
                 ("wind_speed_ms", pa.float64()),
                 ("wind_direction_rad", pa.float64()),
+                ("user_id", pa.int64()),
             ]
         ),
     )

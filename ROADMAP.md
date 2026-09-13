@@ -380,10 +380,15 @@ toute appli à plusieurs utilisateurs. Découpage validé avec l'auteur :
   interne séparé), tokens, upsert (reconnexion/rafraîchissement ne
   duplique jamais un compte). Table VIVANTE (upserts au fil du temps),
   pas reconstruite depuis du Parquet comme le reste de storage/.
-- **T-44b — `user_id` sur les tables personnelles** : `activities`,
-  `streams`, `activity_weather`, `segment_efforts`, `wellness` (toutes
-  déjà 100% propres à un athlète) + migration des données existantes
-  (rattachées à l'auteur comme premier utilisateur).
+- **T-44b — `user_id` sur les tables personnelles** ✅ `activities`,
+  `streams`, `segment_efforts`, `wellness` : DELETE+INSERT par
+  `user_id` plutôt que CREATE OR REPLACE (sinon synchroniser un
+  utilisateur effacerait les autres) ; `activity_weather` n'a pas
+  besoin d'un paramètre séparé, elle relit `activities` en entier à
+  chaque appel et porte déjà `user_id` par ligne. Migration des données
+  existantes faites (`ALTER TABLE ... ADD COLUMN user_id DEFAULT
+  16132599` sur les 5 tables, comptages identiques avant/après
+  reconstruction complète via `build_database.py`).
 - **T-44c — séparation de `segments`** : `segments` reste partagée
   (distance, tracé, KOM — des faits physiques identiques pour tout le
   monde) ; `pr_seconds`/`pr_date`/`effort_count`, aujourd'hui stockés à

@@ -25,8 +25,10 @@ def _write_zone_weather(raw_dir, zone_lat: float, zone_lng: float, hourly: dict)
 
 def _make_activities_table(conn: duckdb.DuckDBPyConnection, rows: list[dict]) -> None:
     """`type` par défaut à "Ride" (le filtre Ride/VirtualRide n'est pas ce
-    qu'on teste dans la plupart de ces tests) — une ligne peut le surcharger."""
-    rows_with_type = [{"type": "Ride", **row} for row in rows]
+    qu'on teste dans la plupart de ces tests) — une ligne peut le
+    surcharger. `user_id` par défaut à 1 (T-44b) — non pertinent pour la
+    plupart de ces tests, sauf ceux qui le vérifient explicitement."""
+    rows_with_type = [{"type": "Ride", "user_id": 1, **row} for row in rows]
     conn.register("_rows", pa.Table.from_pylist(rows_with_type))
     conn.execute("CREATE TABLE activities AS SELECT * FROM _rows")
     conn.unregister("_rows")
@@ -285,3 +287,52 @@ def test_build_activity_weather_table_replaces_existing_table(tmp_path) -> None:
 
     count = conn.execute("SELECT count(*) FROM activity_weather").fetchone()[0]
     assert count == 1
+
+
+def test_build_activity_weather_table_carries_user_id_from_activities(tmp_path) -> None:
+    """Pas de paramètre `user_id` sur cette fonction (T-44b) : elle relit
+    TOUTE la table `activities`, qui porte déjà cette info par ligne —
+    plusieurs utilisateurs traités en un seul appel, sans effacer les
+    lignes de personne (voir le commentaire dans build_activity_weather_
+    table pour le raisonnement complet)."""
+    raw_dir = tmp_path / "weather"
+    _write_zone_weather(
+        raw_dir,
+        47.7,
+        7.4,
+        {
+            "time": ["2024-01-01T10:00", "2024-01-01T11:00"],
+            "temperature_2m": [10.0, 14.0],
+            "relative_humidity_2m": [60.0, 80.0],
+            "surface_pressure": [1000.0, 1010.0],
+            "wind_speed_10m": [10.0, 20.0],
+            "wind_direction_10m": [90.0, 90.0],
+        },
+    )
+    conn = duckdb.connect(":memory:")
+    _make_activities_table(
+        conn,
+        [
+            {
+                "id": 1,
+                "user_id": 1,
+                "start_date": datetime(2024, 1, 1, 10, 30, 0),
+                "start_lat": 47.7,
+                "start_lng": 7.4,
+            },
+            {
+                "id": 2,
+                "user_id": 2,
+                "start_date": datetime(2024, 1, 1, 10, 30, 0),
+                "start_lat": 47.7,
+                "start_lng": 7.4,
+            },
+        ],
+    )
+
+    build_activity_weather_table(conn, raw_dir)
+
+    rows = conn.execute(
+        "SELECT activity_id, user_id FROM activity_weather ORDER BY activity_id"
+    ).fetchall()
+    assert rows == [(1, 1), (2, 2)]
