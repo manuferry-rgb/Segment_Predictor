@@ -268,3 +268,12 @@ def test_ensure_path_is_gitignored_raises_for_an_untracked_path(tmp_path) -> Non
 
     with pytest.raises(RuntimeError, match="gitignor"):
         ensure_path_is_gitignored(tmp_path / "not_ignored", tmp_path)
+
+
+def test_ensure_path_is_gitignored_is_a_noop_without_a_git_repo(tmp_path) -> None:
+    # Cas de la production (T-47) : l'image Docker copie src/, web/, etc.
+    # individuellement, jamais .git — il n'y a donc rien qui pourrait
+    # accidentellement committer ces données, le garde-fou n'a pas lieu
+    # d'être. Sans ce cas particulier, `git check-ignore` échoue partout
+    # en prod ("not a git repository") et /sync est bloqué en permanence.
+    ensure_path_is_gitignored(tmp_path / "whatever", tmp_path)  # ne doit pas lever

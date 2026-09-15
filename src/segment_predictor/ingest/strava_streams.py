@@ -161,7 +161,17 @@ def ensure_path_is_gitignored(path: Path, project_root: Path) -> None:
 
     Ceinture et bretelles : ne fait pas confiance au .gitignore "de mémoire",
     le vérifie réellement avant d'écrire des données personnelles sur disque.
+
+    No-op si `project_root` n'est pas un dépôt Git (production, T-47) : l'image
+    Docker copie src/, web/, etc. individuellement, jamais .git — rien ne
+    pourrait accidentellement committer ces données, le risque que ce
+    garde-fou prévient n'existe donc pas. Sans ce cas particulier,
+    `git check-ignore` échoue partout en prod ("not a git repository") et
+    /sync est bloqué en permanence, peu importe le contenu du .gitignore.
     """
+    if not (project_root / ".git").exists():
+        return
+
     result = subprocess.run(
         ["git", "check-ignore", "-q", str(path)],
         cwd=project_root,
