@@ -11,6 +11,15 @@ FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
 WORKDIR /app
 
+# git : absent de l'image de base (bookworm-slim), mais requis à l'exécution
+# par ensure_path_is_gitignored (ingest/strava_streams.py, appelée depuis
+# POST /sync) qui shell-out vers `git check-ignore`. Sans lui, /sync plante
+# en FileNotFoundError dès le premier clic sur "Synchroniser mes données"
+# — trouvé en testant le vrai déploiement (T-47), pas en local où git est
+# toujours présent sur mon poste.
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
 # UV_LINK_MODE=copy : par défaut uv essaie de faire des hardlinks depuis
 # son cache global vers .venv, impossible entre deux layers Docker
 # différents (systèmes de fichiers distincts) — copy évite un warning
@@ -53,4 +62,12 @@ EXPOSE 8080
 
 # --host 0.0.0.0 obligatoire : le défaut 127.0.0.1 n'écoute que sur la
 # boucle locale DU CONTENEUR, invisible depuis l'extérieur.
-CMD ["uvicorn", "segment_predictor.api.main:app", "--host", "0.0.0.0", "--port", "8080"]
+# --proxy-headers --forwarded-allow-ips="*" : sans eux, request.url_for()
+# (utilisé pour construire le redirect_uri OAuth Strava, T-45) génère une
+# URL en http:// même quand Caddy sert du https:// en façade — uvicorn ne
+# voit que la connexion interne en clair vers localhost:8080 et ignore les
+# en-têtes X-Forwarded-* que Caddy ajoute pourtant déjà par défaut. "*" est
+# sans risque ici : le port 8080 n'est jamais exposé publiquement (seul
+# Caddy, sur la même machine, s'y connecte) — trouvé en testant le vrai
+# déploiement (T-47), le redirect_uri pointait vers Strava en http://.
+CMD ["uvicorn", "segment_predictor.api.main:app", "--host", "0.0.0.0", "--port", "8080", "--proxy-headers", "--forwarded-allow-ips=*"]
