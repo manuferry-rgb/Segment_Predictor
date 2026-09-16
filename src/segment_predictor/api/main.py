@@ -582,12 +582,23 @@ def _build_kom_info(
     ce segment (T-51a/b, via /sync), sinon repli sur l'ancien calcul
     générique CP+W' — jamais d'erreur pour l'utilisateur simplement parce
     que ce segment n'a pas encore de profil réel en base.
+
+    `segment_streams` n'est créée QUE dans /sync (build_segment_streams_
+    table), jamais au démarrage (contrairement à `users`, ensure_users_
+    table) : pour un serveur qui vient d'être déployé ou un utilisateur
+    qui n'a encore jamais synchronisé depuis ce ticket, la table n'existe
+    pas DU TOUT — CatalogException, pas juste 0 ligne pour ce segment.
+    Traité comme le cas "pas encore de profil" ci-dessous, pas comme une
+    erreur (trouvé en testant le vrai déploiement, T-51).
     """
-    rows = conn.execute(
-        "SELECT distance_m, altitude_m, lat, lng FROM segment_streams "
-        "WHERE segment_id = ? ORDER BY sample_index",
-        [segment_id],
-    ).fetchall()
+    try:
+        rows = conn.execute(
+            "SELECT distance_m, altitude_m, lat, lng FROM segment_streams "
+            "WHERE segment_id = ? ORDER BY sample_index",
+            [segment_id],
+        ).fetchall()
+    except duckdb.CatalogException:
+        rows = []
     if len(rows) >= 2:
         distance_m = np.array([r[0] for r in rows])
         altitude_m = np.array([r[1] for r in rows])
