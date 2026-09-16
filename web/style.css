@@ -431,6 +431,17 @@ h1, h2 { text-wrap: balance; margin: 0; }
 
 .card-note { margin: 0; font-size: 0.85rem; color: var(--text-muted); }
 
+/* T-52 : carte 3D du segment (MapLibre GL JS). Hauteur fixe explicite —
+   MapLibre dimensionne son canvas sur les pixels réels du conteneur, un
+   simple "height: auto" laisserait la carte à 0px de haut. */
+.map-card { padding: 1.25rem 1.25rem 0; }
+.segment-map {
+  height: 280px;
+  margin: 0 -1.25rem;
+  border-radius: 0 0 14px 14px;
+  overflow: hidden; /* coins arrondis même sur le canvas MapLibre */
+}
+
 .big-figure {
   margin: 0.1rem 0 0;
   font-family: var(--font-display);

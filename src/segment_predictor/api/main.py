@@ -102,6 +102,13 @@ RAW_DIR_ROOT = PROJECT_ROOT / "data" / "raw"
 load_dotenv(ENV_PATH)
 STRAVA_CLIENT_ID = os.environ.get("STRAVA_CLIENT_ID")
 STRAVA_CLIENT_SECRET = os.environ.get("STRAVA_CLIENT_SECRET")
+# T-52 : contrairement à STRAVA_CLIENT_SECRET, une clé MapTiler est FAITE
+# pour être vue côté client — c'est comme ça que MapLibre GL JS (chargé
+# dans le navigateur) demande les tuiles carte/terrain directement à
+# MapTiler, sans passer par notre backend. Toujours dans .env plutôt
+# qu'en dur dans web/ (rotation sans redéployer le JS statique), mais pas
+# un secret au même sens que STRAVA_CLIENT_SECRET — voir GET /config.
+MAPTILER_API_KEY = os.environ.get("MAPTILER_API_KEY")
 # Signe (pas chiffre) le cookie de session (T-45, SessionMiddleware) :
 # n'importe qui peut LIRE son contenu (juste du base64), mais pas le
 # FORGER sans cette clé — c'est pour ça qu'on n'y met jamais de tokens
@@ -413,6 +420,44 @@ def sync(request: Request) -> SyncSummary:
 # réponse JSON. FastAPI l'utilise pour valider automatiquement les
 # champs et générer la documentation interactive (/docs) — pas besoin de
 # construire le JSON à la main comme on le ferait avec un dict brut.
+class ConfigResponse(BaseModel):
+    # None si MAPTILER_API_KEY absent de .env — le frontend doit alors
+    # simplement ne pas afficher la carte plutôt que planter (T-52).
+    maptiler_api_key: str | None
+
+
+@app.get("/config", response_model=ConfigResponse)
+def config() -> ConfigResponse:
+    """Expose au frontend les clés FAITES pour être publiques (T-52) —
+    contrairement à STRAVA_CLIENT_SECRET, une clé MapTiler est conçue pour
+    voyager jusqu'au navigateur (MapLibre GL JS l'utilise pour demander
+    les tuiles directement à MapTiler). Pas de _require_user_id : rien
+    ici n'est propre à un utilisateur connecté."""
+    return ConfigResponse(maptiler_api_key=MAPTILER_API_KEY)
+
+
+class SegmentGeometry(BaseModel):
+    # (lat, lng) dans l'ordre du tracé — décodé côté serveur
+    # (models.polyline.decode_polyline) pour que le frontend n'ait pas à
+    # réimplémenter un décodeur de polyline Google en JS (T-52).
+    points: list[tuple[float, float]]
+
+
+@app.get("/segments/{segment_id}/geometry", response_model=SegmentGeometry)
+def segment_geometry(segment_id: int, request: Request) -> SegmentGeometry:
+    """Tracé du segment pour la carte 3D (T-52) — `segments` est PARTAGÉE
+    entre utilisateurs (T-44c), mais `_require_user_id` reste demandé
+    pour cohérence avec le reste de l'API (jamais d'endpoint accessible
+    sans connexion, même sur une donnée non personnelle)."""
+    _require_user_id(request)
+    row = (
+        _db_cursor().execute("SELECT polyline FROM segments WHERE id = ?", [segment_id]).fetchone()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"segment {segment_id} introuvable")
+    return SegmentGeometry(points=decode_polyline(row[0]))
+
+
 class SegmentSummary(BaseModel):
     id: int
     name: str

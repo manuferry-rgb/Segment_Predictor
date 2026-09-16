@@ -12,6 +12,13 @@
       href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700;800&family=Archivo:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
     />
     <link rel="stylesheet" href="style.css" />
+    <!-- MapLibre GL JS (T-52) : carte 3D du segment — CDN officiel,
+         open-source, gratuit, aucune clé requise pour la bibliothèque
+         elle-même (seule la couche tuiles/terrain MapTiler en a besoin,
+         voir segment-map.js). Version épinglée. Feuille de style seule
+         ici : le script JS est chargé en bas de page, comme les autres
+         (non-bloquant, la carte n'est initialisée qu'au premier calcul). -->
+    <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
   </head>
   <body>
     <div class="page">
@@ -68,7 +75,9 @@
       <div id="results" hidden></div>
     </div>
 
+    <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
     <script src="auth.js"></script>
     <script src="app.js"></script>
+    <script src="segment-map.js"></script>
   </body>
 </html>
