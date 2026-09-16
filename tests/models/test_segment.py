@@ -21,6 +21,7 @@ from segment_predictor.models.segment import (
     chunk_segment,
     haversine_distance_m,
     segment_chunks_from_polyline,
+    segment_chunks_from_profile,
     simulate_segment_time,
     simulate_segment_time_from_mmp_curve,
     smooth_altitude,
@@ -152,6 +153,41 @@ def test_chunk_segment_raises_on_non_positive_chunk_length() -> None:
     zeros = np.zeros_like(distance_m)
     with pytest.raises(ValueError, match="chunk_length_m"):
         chunk_segment(distance_m, zeros, zeros, zeros, chunk_length_m=0.0)
+
+
+# ---- segment_chunks_from_profile (T-51c) ------------------------------------------------
+
+
+def test_segment_chunks_from_profile_smooths_then_chunks_a_real_profile() -> None:
+    """segment_chunks_from_profile = smooth_altitude + chunk_segment enchaînés
+    (T-51c) — pas une nouvelle mécanique, juste le point d'entrée qui
+    manquait pour le profil OFFICIEL d'un segment (T-51a/T-51b, distance/
+    altitude/lat/lng), par opposition à segment_chunks_from_polyline
+    (T-32, lat/lng seulement + une pente moyenne unique appliquée
+    partout). Même vérité connue que test_chunk_segment_recovers_exact_
+    constant_grade_without_noise, mais avec du bruit d'altitude en plus
+    (comme un vrai relevé GPS) : sans le smooth_altitude intercalé, la
+    pente par tronçon serait polluée par ce bruit."""
+    rng = np.random.default_rng(42)
+    distance_m = np.arange(0, 201, 5.0)  # tous les 5m, plus dense qu'un vrai relevé Strava
+    true_grade = 0.06
+    noisy_altitude_m = distance_m * true_grade + rng.normal(0.0, 0.2, size=distance_m.shape)
+    lat = distance_m / METERS_PER_DEGREE  # plein nord
+    lng = np.zeros_like(distance_m)
+
+    chunks = segment_chunks_from_profile(
+        distance_m, noisy_altitude_m, lat, lng, chunk_length_m=50.0
+    )
+
+    assert len(chunks) == 4
+    for chunk in chunks:
+        # abs=0.015, pas 0.01 : les tronçons aux deux EXTRÉMITÉS (0-50m et
+        # 150-200m) subissent aussi un léger lissage de bord (fenêtre de
+        # smooth_altitude tronquée faute de points avant 0/après 200m,
+        # comportement déjà documenté dans smooth_altitude lui-même) —
+        # pas seulement le bruit gaussien injecté ici.
+        assert chunk.grade == pytest.approx(true_grade, abs=0.015)
+        assert chunk.heading_rad == pytest.approx(0.0, abs=1e-6)
 
 
 # ---- haversine_distance_m / segment_chunks_from_polyline (T-32) ------------------------

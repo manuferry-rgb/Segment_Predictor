@@ -236,6 +236,32 @@ def segment_chunks_from_polyline(
     return chunks
 
 
+def segment_chunks_from_profile(
+    distance_m: np.ndarray,
+    altitude_m: np.ndarray,
+    lat: np.ndarray,
+    lng: np.ndarray,
+    chunk_length_m: float = 50.0,
+) -> list[SegmentChunk]:
+    """Tronçons ~50m avec une VRAIE pente par tronçon (T-51c), depuis le
+    profil OFFICIEL d'un segment (`segment_streams`, T-51a/T-51b :
+    distance/altitude/lat/lng le long du tracé) — remplace
+    `segment_chunks_from_polyline` (T-32) pour les calculs où une pente
+    moyenne unique appliquée à tout le segment n'est pas assez fidèle
+    (trouvé en testant KomInfo.power_w en vrai, T-51 : un segment à pente
+    moyenne 4.8% mais probablement très irrégulière donnait une
+    puissance requise fausse dans les deux sens).
+
+    Pas une nouvelle mécanique : enchaîne simplement `smooth_altitude`
+    (lisse le bruit GPS avant de dériver une pente, T-12) puis
+    `chunk_segment` (T-12, déjà utilisée pour chunker le stream d'UNE
+    activité en calibration) — cette fonction-ci n'existait pas encore
+    pour le profil d'un SEGMENT lui-même.
+    """
+    smoothed_altitude_m = smooth_altitude(distance_m, altitude_m)
+    return chunk_segment(distance_m, smoothed_altitude_m, lat, lng, chunk_length_m)
+
+
 def average_tailwind_speed_ms(
     chunks: list[SegmentChunk], wind_speed_ms: float, wind_direction_rad: float
 ) -> float:
