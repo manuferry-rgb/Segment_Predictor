@@ -26,6 +26,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from segment_predictor.calibrate.cda_crr import calibrate_cda_crr_from_db
 from segment_predictor.calibrate.draft_tagging import (
     DEFAULT_CP_FIT_DURATIONS_S,
+    LONG_DURATIONS_FOR_REAL_CURVE_S,
     SHORT_DURATIONS_FOR_REAL_CURVE_S,
     compute_aggregate_mmp_curve,
     fit_current_cp,
@@ -567,16 +568,19 @@ def predict(request: PredictRequest, http_request: Request) -> PredictResponse:
                 cda_crr_fit.crr,
                 cp_fit,
             )
-            # T-49c : un segment trop court pour cp_fit.duration_range_s
-            # (T-48a, ex. montée courte et raide) ne renvoie ici AUCUN
-            # créneau, quel que soit le vent — pas une erreur du segment,
-            # juste hors du domaine du modèle CP+W'. Secours sur la
-            # courbe MMP réellement mesurée (T-49b) plutôt que de laisser
-            # l'utilisateur sans rien.
+            # T-49c/T-50a : un segment hors de cp_fit.duration_range_s
+            # (T-48a — trop court, ex. montée raide type Burg Climb ; ou
+            # trop long, ex. HBFH ~26 min) ne renvoie ici AUCUN créneau,
+            # quel que soit le vent — pas une erreur du segment, juste
+            # hors du domaine du modèle CP+W'. Secours sur la courbe MMP
+            # réellement mesurée (T-49b), aux durées courtes ET longues
+            # combinées (interpolate_mmp_curve n'a besoin que de 2 points
+            # qui encadrent la durée visée, peu importe de quel côté).
             if not windows:
-                short_mmp_curve = compute_aggregate_mmp_curve(
-                    conn, SHORT_DURATIONS_FOR_REAL_CURVE_S
+                real_curve_durations = (
+                    SHORT_DURATIONS_FOR_REAL_CURVE_S + LONG_DURATIONS_FOR_REAL_CURVE_S
                 )
+                real_mmp_curve = compute_aggregate_mmp_curve(conn, real_curve_durations)
                 windows = rank_forecast_windows_for_segment_from_real_curve(
                     client,
                     conn,
@@ -584,7 +588,7 @@ def predict(request: PredictRequest, http_request: Request) -> PredictResponse:
                     request.mass_kg,
                     effective_cda_m2,
                     cda_crr_fit.crr,
-                    short_mmp_curve,
+                    real_mmp_curve,
                 )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

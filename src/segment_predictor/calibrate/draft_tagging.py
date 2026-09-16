@@ -40,6 +40,11 @@ DEFAULT_CP_FIT_DURATIONS_S = (180, 240, 300, 420, 600, 900, 1200)
 # MMP réelle pour rank_forecast_windows_from_real_curve (T-49b/T-49c) —
 # jamais passé à fit_current_cp.
 SHORT_DURATIONS_FOR_REAL_CURVE_S = (30, 45, 60, 90, 120, 150)
+# T-50a : symétrique côté LONG (>1200s, ex. HBFH 15km/D+224m -> ~26 min) —
+# même raisonnement que SHORT_DURATIONS_FOR_REAL_CURVE_S : jamais mélangé
+# à DEFAULT_CP_FIT_DURATIONS_S (le modèle CP+W' est pensé pour ~3-20 min,
+# pas pour de l'endurance longue, la dérive y serait différente aussi).
+LONG_DURATIONS_FOR_REAL_CURVE_S = (1500, 1800, 2100, 2700, 3300, 3900)
 DEFAULT_DRAFT_STATUS = "unknown"
 # ';' plutôt que ',' : Excel en locale française écrit (et attend, au
 # double-clic) des CSV séparés par ';' — un ',' obligerait à repasser par
