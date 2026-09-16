@@ -48,11 +48,9 @@ from segment_predictor.ingest.strava_streams import (
     list_eligible_activity_ids,
 )
 from segment_predictor.models.draft import draft_ratio_for_preset
-from segment_predictor.models.pacing import optimize_pacing
 from segment_predictor.models.polyline import decode_polyline
 from segment_predictor.models.power import interpolate_mmp_curve, sustainable_power_w
 from segment_predictor.models.segment import (
-    SegmentChunk,
     segment_chunks_from_polyline,
     simulate_segment_time_from_mmp_curve,
 )
@@ -444,17 +442,6 @@ class Window(BaseModel):
     power_source: str
 
 
-class PacingInfo(BaseModel):
-    """Une seule puissance, pas un profil variable (T-26 dans app.py) :
-    aucun profil pente/distance détaillé n'est stocké au niveau segment
-    (T-07b jamais fait), donc le segment est optimisé comme UN SEUL
-    tronçon à pente moyenne — "pacing" ici veut dire "la puissance
-    soutenable optimale pour ce profil simplifié", pas une vraie
-    stratégie qui varierait dans le segment."""
-
-    power_w: float
-
-
 class KomInfo(BaseModel):
     seconds: int
     # Puissance estimée par TON modèle CP pour TENIR ce temps — pas la
@@ -519,7 +506,6 @@ class PredictResponse(BaseModel):
     # renvoie déjà trié par temps croissant, T-27) — pas de champ "best"
     # séparé qui dupliquerait windows[0], c'est au frontend de le savoir.
     windows: list[Window]
-    pacing: PacingInfo
     kom: KomInfo
     # None si jamais roulé ce segment (pr_seconds NULL en base) — pas une
     # erreur, un fait normal pour un segment jamais tenté.
@@ -606,13 +592,8 @@ def predict(request: PredictRequest, http_request: Request) -> PredictResponse:
             ),
         )
 
-    # Un seul tronçon (comme app.py, T-26) : optimize_pacing simule à
-    # vent nul, donc un cap unique ne change rien à son résultat — pas la
-    # peine d'y payer le coût du découpage par polyline (T-32) pour zéro
-    # différence.
-    distance_m, average_grade, heading_rad, polyline, kom_seconds = conn.execute(
-        "SELECT distance_m, average_grade, heading_rad, polyline, kom_seconds "
-        "FROM segments WHERE id = ?",
+    average_grade, polyline, kom_seconds = conn.execute(
+        "SELECT average_grade, polyline, kom_seconds FROM segments WHERE id = ?",
         [request.segment_id],
     ).fetchone()
     # PR : table PAR ATHLÈTE depuis T-44c (segments.pr_seconds n'existe
@@ -623,15 +604,6 @@ def predict(request: PredictRequest, http_request: Request) -> PredictResponse:
         [user_id, request.segment_id],
     ).fetchone()
     pr_seconds = pr_stats_row[0] if pr_stats_row is not None else None
-    chunk = SegmentChunk(0.0, distance_m, average_grade, heading_rad)
-    pacing_result = optimize_pacing(
-        [chunk],
-        cp_fit.cp_watts,
-        cp_fit.w_prime_joules,
-        request.mass_kg,
-        effective_cda_m2,
-        cda_crr_fit.crr,
-    )
 
     kom_power_w = sustainable_power_w(cp_fit.cp_watts, cp_fit.w_prime_joules, kom_seconds)
     duration_min_s, duration_max_s = cp_fit.duration_range_s
@@ -754,7 +726,6 @@ def predict(request: PredictRequest, http_request: Request) -> PredictResponse:
             )
             for w in windows
         ],
-        pacing=PacingInfo(power_w=pacing_result.power_profile_w[0]),
         kom=kom_info,
         pr=pr_info,
         uncertainty=uncertainty_info,

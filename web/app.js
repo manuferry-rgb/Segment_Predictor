@@ -154,19 +154,6 @@ function renderWindowRows(windows) {
     .join("");
 }
 
-function renderPacingCard(pacing, cpWatts) {
-  return `
-    <article class="card">
-      <h2>Stratégie de pacing</h2>
-      <p class="big-figure">${Math.round(pacing.power_w)} W ${zonePillHtml(pacing.power_w, cpWatts)}</p>
-      <p class="card-note">
-        Puissance constante optimale, vent mis à part — un seul tronçon à pente
-        moyenne, pas un profil variable : aucun relevé pente/distance détaillé
-        n'existe au niveau segment.
-      </p>
-    </article>`;
-}
-
 function renderKomCard(kom, cpWatts) {
   const warning = kom.power_w_extrapolated
     ? `<p class="warn">⚠ ${kom.seconds}s hors de la plage calibrée du modèle de puissance seuil — estimation moins fiable</p>`
@@ -327,7 +314,6 @@ function renderResults(data) {
 
     <section class="body-grid">
       <div class="col-left">
-        ${renderPacingCard(data.pacing, cpWatts)}
         <div class="pair">
           ${renderKomCard(data.kom, cpWatts)}
           ${renderPrCard(data.pr, cpWatts)}
