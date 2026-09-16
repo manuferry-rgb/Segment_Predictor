@@ -53,7 +53,12 @@ async function renderSegmentMap(segmentId) {
 
   currentMap = new maplibregl.Map({
     container: "segment-map",
-    style: `https://api.maptiler.com/maps/outdoor-v2/style.json?key=${apiKey}`,
+    // "dataviz" plutôt que "outdoor-v2" (T-52, trouvé en testant en vrai) :
+    // "outdoor" colore les parcelles agricoles par type, trop chargé pour
+    // une carte de 280px de haut — "dataviz" est conçu par MapTiler
+    // spécifiquement pour superposer ses propres données (notre tracé)
+    // sur un fond neutre gris/pastel clair, sans ce bruit visuel.
+    style: `https://api.maptiler.com/maps/dataviz/style.json?key=${apiKey}`,
     // pitch à 0 ici (pas 60) : cadrer les bornes ET incliner la caméra en
     // une seule étape donne un zoom aberrant (constaté en vrai, T-52) —
     // fitBounds calcule mal l'échelle quand la caméra est déjà penchée.
