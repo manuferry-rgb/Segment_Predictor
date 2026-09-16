@@ -55,7 +55,8 @@ async function runSync() {
     const quotaReached =
       summary.streams_quota_reached ||
       summary.activity_details_quota_reached ||
-      summary.segments_quota_reached;
+      summary.segments_quota_reached ||
+      summary.segment_streams_quota_reached;
     const quotaNote = quotaReached
       ? " ⚠ Quota Strava atteint (partagé entre tous les utilisateurs) — reviens demain pour continuer."
       : "";

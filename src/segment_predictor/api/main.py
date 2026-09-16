@@ -16,6 +16,7 @@ from urllib.parse import urlencode
 
 import duckdb
 import httpx
+import numpy as np
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import RedirectResponse
@@ -39,6 +40,7 @@ from segment_predictor.ingest.strava_auth import (
     exchange_authorization_code,
     get_valid_access_token_for_user,
 )
+from segment_predictor.ingest.strava_segment_streams import fetch_and_store_segment_streams
 from segment_predictor.ingest.strava_segments import (
     fetch_and_store_segments,
     list_starred_segment_ids,
@@ -50,9 +52,15 @@ from segment_predictor.ingest.strava_streams import (
 )
 from segment_predictor.models.draft import draft_ratio_for_preset
 from segment_predictor.models.polyline import decode_polyline
-from segment_predictor.models.power import interpolate_mmp_curve, sustainable_power_w
+from segment_predictor.models.power import (
+    CriticalPowerFit,
+    interpolate_mmp_curve,
+    sustainable_power_w,
+)
 from segment_predictor.models.segment import (
+    power_required_for_target_time,
     segment_chunks_from_polyline,
+    segment_chunks_from_profile,
     simulate_segment_time_from_mmp_curve,
 )
 from segment_predictor.models.uncertainty import propagate_uncertainty
@@ -63,6 +71,7 @@ from segment_predictor.predict.forecast_window import (
 from segment_predictor.predict.wind_scan import scan_segments_for_today
 from segment_predictor.storage.activities import build_activities_table
 from segment_predictor.storage.segment_efforts import build_segment_efforts_table
+from segment_predictor.storage.segment_streams import build_segment_streams_table
 from segment_predictor.storage.segments import (
     build_segments_table,
     build_user_segment_stats_table,
@@ -297,6 +306,9 @@ class SyncSummary(BaseModel):
     segments_fetched: int
     segments_remaining: int
     segments_quota_reached: bool
+    segment_streams_fetched: int
+    segment_streams_remaining: int
+    segment_streams_quota_reached: bool
 
 
 @app.post("/sync", response_model=SyncSummary)
@@ -333,6 +345,12 @@ def sync(request: Request) -> SyncSummary:
     segments_raw_dir_root = RAW_DIR_ROOT / "strava_segments"
     segments_raw_dir = segments_raw_dir_root / user_id_str
     details_raw_dir = RAW_DIR_ROOT / "strava_activity_details" / user_id_str
+    # À PLAT, pas de sous-dossier <user_id>/ (T-51a) : le tracé d'un segment
+    # est identique pour tout le monde — un segment déjà favori d'un AUTRE
+    # utilisateur ne sera jamais re-téléchargé ici (fetch_and_store_segment_
+    # streams saute déjà ce qui existe sur disque), contrairement aux
+    # sources personnelles de T-44d.
+    segment_streams_raw_dir = RAW_DIR_ROOT / "strava_segment_streams"
 
     with httpx.Client(timeout=30.0) as client:
         access_token = get_valid_access_token_for_user(
@@ -357,6 +375,14 @@ def sync(request: Request) -> SyncSummary:
         segments_summary = fetch_and_store_segments(
             client, access_token, segment_ids, segments_raw_dir
         )
+        # T-51 : profil réel (distance/altitude/latlng) des mêmes segments
+        # favoris — sert à remplacer l'unique average_grade par une vraie
+        # pente tronçon par tronçon (KomInfo.power_w notamment). Après le
+        # premier utilisateur à favoriser un segment donné, plus jamais
+        # re-demandé pour personne (stockage à plat, déjà téléchargé).
+        segment_streams_summary = fetch_and_store_segment_streams(
+            client, access_token, segment_ids, segment_streams_raw_dir
+        )
 
     build_activities_table(conn, activities_raw_dir, user_id=user_id)
     build_streams_table(conn, streams_raw_dir, user_id=user_id)
@@ -364,6 +390,7 @@ def sync(request: Request) -> SyncSummary:
     build_user_segment_stats_table(conn, segments_raw_dir, user_id=user_id)
     build_user_starred_segments_table(conn, segments_raw_dir, user_id=user_id)
     build_segment_efforts_table(conn, details_raw_dir, user_id=user_id)
+    build_segment_streams_table(conn, segment_streams_raw_dir)
 
     return SyncSummary(
         new_activities_fetched=new_activities_path is not None,
@@ -376,6 +403,9 @@ def sync(request: Request) -> SyncSummary:
         segments_fetched=len(segments_summary.fetched_ids),
         segments_remaining=len(segments_summary.remaining_ids),
         segments_quota_reached=segments_summary.stopped_due_to_daily_quota,
+        segment_streams_fetched=len(segment_streams_summary.fetched_ids),
+        segment_streams_remaining=len(segment_streams_summary.remaining_ids),
+        segment_streams_quota_reached=segment_streams_summary.stopped_due_to_daily_quota,
     )
 
 
@@ -452,13 +482,23 @@ class Window(BaseModel):
 
 class KomInfo(BaseModel):
     seconds: int
-    # Puissance estimée par TON modèle CP pour TENIR ce temps — pas la
-    # puissance réelle du recordman (Strava ne la fournit pas).
+    # Puissance estimée pour TOI pour TENIR ce temps — pas la puissance
+    # réelle du recordman (Strava ne la fournit pas).
     power_w: float
-    # True si `seconds` tombe hors de la plage de durées sur laquelle
-    # CP/W' ont été calibrés (fit_current_cp) — extrapolation, donc moins
-    # fiable, signalé plutôt que présenté comme aussi sûr que dans la
-    # plage calibrée.
+    # "real_profile" (T-51e, préféré) : puissance CONSTANTE qui, sur le
+    # vrai relief tronçon par tronçon de CE segment (segment_streams,
+    # T-51a/b/c), donnerait exactement ce temps — physiquement ancré,
+    # peu importe que le segment soit court/long/à pente irrégulière.
+    # "cp_model_generic" (repli, si le profil n'a pas encore été
+    # synchronisé pour ce segment) : ton modèle CP+W' générique sur cette
+    # SEULE durée, sans aucune notion de pente ou de distance — trouvé
+    # trompeur en testant en vrai (T-51, un ~4.8% de pente moyenne
+    # donnait 363W au lieu d'un ordre de grandeur plausible).
+    power_source: str
+    # Seulement significatif pour power_source == "cp_model_generic" :
+    # True si `seconds` tombe hors de la plage de durées calibrée de
+    # CP/W' (fit_current_cp) — sans objet pour "real_profile", qui
+    # n'extrapole pas un modèle de puissance-durée du tout.
     power_w_extrapolated: bool
 
 
@@ -527,6 +567,51 @@ class PredictResponse(BaseModel):
     # ou de simulate_segment_time_from_mmp_curve tel quel, pas reformulé).
     real_power_curve: RealPowerCurveEstimate | None
     real_power_curve_unavailable_reason: str | None
+
+
+def _build_kom_info(
+    conn: duckdb.DuckDBPyConnection,
+    segment_id: int,
+    kom_seconds: int,
+    cp_fit: CriticalPowerFit,
+    mass_kg: float,
+    cda_m2: float,
+    crr: float,
+) -> KomInfo:
+    """T-51e : "real_profile" quand `segment_streams` a été synchronisé pour
+    ce segment (T-51a/b, via /sync), sinon repli sur l'ancien calcul
+    générique CP+W' — jamais d'erreur pour l'utilisateur simplement parce
+    que ce segment n'a pas encore de profil réel en base.
+    """
+    rows = conn.execute(
+        "SELECT distance_m, altitude_m, lat, lng FROM segment_streams "
+        "WHERE segment_id = ? ORDER BY sample_index",
+        [segment_id],
+    ).fetchall()
+    if len(rows) >= 2:
+        distance_m = np.array([r[0] for r in rows])
+        altitude_m = np.array([r[1] for r in rows])
+        lat = np.array([r[2] for r in rows])
+        lng = np.array([r[3] for r in rows])
+        try:
+            chunks = segment_chunks_from_profile(distance_m, altitude_m, lat, lng)
+            power_w = power_required_for_target_time(chunks, kom_seconds, mass_kg, cda_m2, crr)
+            return KomInfo(
+                seconds=kom_seconds,
+                power_w=power_w,
+                power_source="real_profile",
+                power_w_extrapolated=False,
+            )
+        except ValueError:
+            pass  # profil dégénéré ou temps hors de DEFAULT_POWER_BOUNDS_W : repli ci-dessous
+
+    duration_min_s, duration_max_s = cp_fit.duration_range_s
+    return KomInfo(
+        seconds=kom_seconds,
+        power_w=sustainable_power_w(cp_fit.cp_watts, cp_fit.w_prime_joules, kom_seconds),
+        power_source="cp_model_generic",
+        power_w_extrapolated=not duration_min_s <= kom_seconds <= duration_max_s,
+    )
 
 
 # def, pas async def (nouveau concept) : le corps fait de l'I/O bloquant
@@ -616,12 +701,14 @@ def predict(request: PredictRequest, http_request: Request) -> PredictResponse:
     ).fetchone()
     pr_seconds = pr_stats_row[0] if pr_stats_row is not None else None
 
-    kom_power_w = sustainable_power_w(cp_fit.cp_watts, cp_fit.w_prime_joules, kom_seconds)
-    duration_min_s, duration_max_s = cp_fit.duration_range_s
-    kom_info = KomInfo(
-        seconds=kom_seconds,
-        power_w=kom_power_w,
-        power_w_extrapolated=not duration_min_s <= kom_seconds <= duration_max_s,
+    kom_info = _build_kom_info(
+        conn,
+        request.segment_id,
+        kom_seconds,
+        cp_fit,
+        request.mass_kg,
+        effective_cda_m2,
+        cda_crr_fit.crr,
     )
 
     pr_info = None

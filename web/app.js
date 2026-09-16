@@ -158,6 +158,13 @@ function renderKomCard(kom, cpWatts) {
   const warning = kom.power_w_extrapolated
     ? `<p class="warn">⚠ ${kom.seconds}s hors de la plage calibrée du modèle de puissance seuil — estimation moins fiable</p>`
     : "";
+  // "real_profile" (T-51e) : ancré sur le vrai relief tronçon par tronçon
+  // de ce segment (pente variable réelle), pas juste une durée générique
+  // — plus fiable, surtout sur un profil irrégulier.
+  const sourceNote =
+    kom.power_source === "real_profile"
+      ? "Depuis le vrai relief de ce segment (pente réelle tronçon par tronçon), pas la puissance réelle du recordman."
+      : "Ton modèle de puissance seuil générique (pente/distance du segment ignorées, profil pas encore synchronisé), pas la puissance réelle du recordman.";
   return `
     <article class="card">
       <h2>KOM du segment</h2>
@@ -166,7 +173,7 @@ function renderKomCard(kom, cpWatts) {
         Puissance estimée pour toi : <strong>${Math.round(kom.power_w)} W</strong>
         ${zonePillHtml(kom.power_w, cpWatts)}
       </p>
-      <p class="card-note">Ton modèle de puissance seuil, pas la puissance réelle du recordman.</p>
+      <p class="card-note">${sourceNote}</p>
       ${warning}
     </article>`;
 }
