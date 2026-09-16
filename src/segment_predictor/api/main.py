@@ -26,6 +26,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from segment_predictor.calibrate.cda_crr import calibrate_cda_crr_from_db
 from segment_predictor.calibrate.draft_tagging import (
     DEFAULT_CP_FIT_DURATIONS_S,
+    SHORT_DURATIONS_FOR_REAL_CURVE_S,
     compute_aggregate_mmp_curve,
     fit_current_cp,
     load_existing_annotations,
@@ -56,7 +57,10 @@ from segment_predictor.models.segment import (
     simulate_segment_time_from_mmp_curve,
 )
 from segment_predictor.models.uncertainty import propagate_uncertainty
-from segment_predictor.predict.forecast_window import rank_forecast_windows_for_segment
+from segment_predictor.predict.forecast_window import (
+    rank_forecast_windows_for_segment,
+    rank_forecast_windows_for_segment_from_real_curve,
+)
 from segment_predictor.predict.wind_scan import scan_segments_for_today
 from segment_predictor.storage.activities import build_activities_table
 from segment_predictor.storage.segment_efforts import build_segment_efforts_table
@@ -433,6 +437,11 @@ class Window(BaseModel):
     wind_speed_ms: float
     wind_direction_rad: float
     temperature_k: float
+    # "cp_model" (modèle CP+W', ajusté sur 3-20 min) ou "real_curve"
+    # (T-49c, secours pour un segment trop court pour ce modèle — la
+    # puissance vient alors d'un effort RÉELLEMENT déjà atteint, pas
+    # d'une extrapolation) — voir ForecastWindow.power_source.
+    power_source: str
 
 
 class PacingInfo(BaseModel):
@@ -565,13 +574,36 @@ def predict(request: PredictRequest, http_request: Request) -> PredictResponse:
                 cda_crr_fit.crr,
                 cp_fit,
             )
+            # T-49c : un segment trop court pour cp_fit.duration_range_s
+            # (T-48a, ex. montée courte et raide) ne renvoie ici AUCUN
+            # créneau, quel que soit le vent — pas une erreur du segment,
+            # juste hors du domaine du modèle CP+W'. Secours sur la
+            # courbe MMP réellement mesurée (T-49b) plutôt que de laisser
+            # l'utilisateur sans rien.
+            if not windows:
+                short_mmp_curve = compute_aggregate_mmp_curve(
+                    conn, SHORT_DURATIONS_FOR_REAL_CURVE_S
+                )
+                windows = rank_forecast_windows_for_segment_from_real_curve(
+                    client,
+                    conn,
+                    request.segment_id,
+                    request.mass_kg,
+                    effective_cda_m2,
+                    cda_crr_fit.crr,
+                    short_mmp_curve,
+                )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     if not windows:
         raise HTTPException(
             status_code=404,
-            detail="Aucun créneau exploitable sur les 10 prochains jours (6h-21h).",
+            detail=(
+                "Aucun créneau exploitable sur les 10 prochains jours (6h-21h) — "
+                "ni via le modèle CP+W', ni via ta courbe de puissance réelle mesurée "
+                "(pas encore assez d'efforts courts et intenses enregistrés pour ce segment)."
+            ),
         )
 
     # Un seul tronçon (comme app.py, T-26) : optimize_pacing simule à
@@ -640,10 +672,14 @@ def predict(request: PredictRequest, http_request: Request) -> PredictResponse:
     best = windows[0]
     chunks = segment_chunks_from_polyline(decode_polyline(polyline), average_grade)
 
-    # Incertitude (T-28)
+    # Incertitude (T-28) : propagate_uncertainty répond spécifiquement à
+    # "quelle dispersion autour du modèle CP+W'" (cp_watts_std/w_prime_
+    # joules_std) — sans objet quand best vient déjà de la courbe réelle
+    # (T-49c, segment trop court pour ce modèle) : il n'y a alors plus de
+    # "modèle CP+W'" dont mesurer l'incertitude pour CE créneau.
     performance_index_samples = recent_performance_index_values(conn, cp_fit=cp_fit)
     uncertainty_info = None
-    if performance_index_samples:
+    if best.power_source == "cp_model" and performance_index_samples:
         uncertainty_result = propagate_uncertainty(
             chunks,
             cp_watts=cp_fit.cp_watts,
@@ -672,26 +708,32 @@ def predict(request: PredictRequest, http_request: Request) -> PredictResponse:
     # plage mesurée (~3-20 min) avant d'avoir convergé. N'affecte ni le
     # classement ni predicted_time_s ci-dessus, uniquement ce chiffre de
     # comparaison.
-    mmp_curve = compute_aggregate_mmp_curve(conn, DEFAULT_CP_FIT_DURATIONS_S)
+    #
+    # Sans objet quand best vient déjà de la courbe réelle (T-49c) : ce
+    # serait comparer la courbe réelle à... elle-même. real_power_curve
+    # reste None dans ce cas (pas une "indisponibilité" à expliquer,
+    # juste une comparaison qui n'a plus de sens).
     real_power_curve_info = None
     real_power_curve_unavailable_reason = None
-    try:
-        real_time_s = simulate_segment_time_from_mmp_curve(
-            chunks,
-            mmp_curve,
-            request.mass_kg,
-            effective_cda_m2,
-            cda_crr_fit.crr,
-            wind_speed_ms=best.wind_speed_ms,
-            wind_direction_rad=best.wind_direction_rad,
-            initial_guess_s=best.predicted_time_s,
-        )
-        real_power_curve_info = RealPowerCurveEstimate(
-            predicted_time_s=real_time_s,
-            power_w=interpolate_mmp_curve(mmp_curve, real_time_s),
-        )
-    except ValueError as exc:
-        real_power_curve_unavailable_reason = str(exc)
+    if best.power_source == "cp_model":
+        mmp_curve = compute_aggregate_mmp_curve(conn, DEFAULT_CP_FIT_DURATIONS_S)
+        try:
+            real_time_s = simulate_segment_time_from_mmp_curve(
+                chunks,
+                mmp_curve,
+                request.mass_kg,
+                effective_cda_m2,
+                cda_crr_fit.crr,
+                wind_speed_ms=best.wind_speed_ms,
+                wind_direction_rad=best.wind_direction_rad,
+                initial_guess_s=best.predicted_time_s,
+            )
+            real_power_curve_info = RealPowerCurveEstimate(
+                predicted_time_s=real_time_s,
+                power_w=interpolate_mmp_curve(mmp_curve, real_time_s),
+            )
+        except ValueError as exc:
+            real_power_curve_unavailable_reason = str(exc)
 
     return PredictResponse(
         calibration=CalibrationInfo(
@@ -708,6 +750,7 @@ def predict(request: PredictRequest, http_request: Request) -> PredictResponse:
                 wind_speed_ms=w.wind_speed_ms,
                 wind_direction_rad=w.wind_direction_rad,
                 temperature_k=w.temperature_k,
+                power_source=w.power_source,
             )
             for w in windows
         ],

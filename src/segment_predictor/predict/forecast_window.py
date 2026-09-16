@@ -185,6 +185,23 @@ def rank_forecast_windows_for_segment(
     pas recalculés ici — ce module ne connaît pas le chemin du CSV
     d'annotations (T-16), qui reste une responsabilité du script.
     """
+    chunks, forecast = _segment_chunks_and_forecast(http_client, conn, segment_id, forecast_days)
+
+    return rank_forecast_windows(
+        forecast, chunks, cp_fit, mass_kg, cda_m2, crr, min_hour=min_hour, max_hour=max_hour
+    )
+
+
+def _segment_chunks_and_forecast(
+    http_client: httpx.Client,
+    conn: duckdb.DuckDBPyConnection,
+    segment_id: int,
+    forecast_days: int,
+) -> tuple[list[SegmentChunk], dict]:
+    """Partagé par rank_forecast_windows_for_segment et sa variante courbe
+    réelle (T-49c) : même segment, même position, même prévision — seul
+    le modèle de puissance utilisé pour classer les créneaux diffère
+    entre les deux appelants."""
     row = conn.execute(
         "SELECT average_grade, polyline, start_lat, start_lng FROM segments WHERE id = ?",
         [segment_id],
@@ -196,9 +213,30 @@ def rank_forecast_windows_for_segment(
     points = decode_polyline(polyline)
     chunks = segment_chunks_from_polyline(points, average_grade)
     forecast = get_forecast_weather(http_client, start_lat, start_lng, forecast_days)
+    return chunks, forecast
 
-    return rank_forecast_windows(
-        forecast, chunks, cp_fit, mass_kg, cda_m2, crr, min_hour=min_hour, max_hour=max_hour
+
+def rank_forecast_windows_for_segment_from_real_curve(
+    http_client: httpx.Client,
+    conn: duckdb.DuckDBPyConnection,
+    segment_id: int,
+    mass_kg: float,
+    cda_m2: float,
+    crr: float,
+    mmp_curve: dict[int, float],
+    forecast_days: int = DEFAULT_FORECAST_DAYS,
+    min_hour: int = DEFAULT_MIN_HOUR,
+    max_hour: int = DEFAULT_MAX_HOUR,
+) -> list[ForecastWindow]:
+    """Variante de `rank_forecast_windows_for_segment` (T-49c) : appelée en
+    secours quand celle-ci renvoie une liste vide (segment trop court pour
+    `cp_fit.duration_range_s`, T-48a) — classe la même prévision avec
+    `rank_forecast_windows_from_real_curve` (T-49b) à la place.
+    """
+    chunks, forecast = _segment_chunks_and_forecast(http_client, conn, segment_id, forecast_days)
+
+    return rank_forecast_windows_from_real_curve(
+        forecast, chunks, mmp_curve, mass_kg, cda_m2, crr, min_hour=min_hour, max_hour=max_hour
     )
 
 

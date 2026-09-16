@@ -31,6 +31,15 @@ from segment_predictor.models.power import (
 from segment_predictor.models.segment import SegmentChunk, simulate_segment_time
 
 DEFAULT_CP_FIT_DURATIONS_S = (180, 240, 300, 420, 600, 900, 1200)
+# T-49a : durées COURTES, séparées de DEFAULT_CP_FIT_DURATIONS_S ci-dessus
+# — celui-ci alimente l'ajustement CP+W' lui-même (fit_current_cp), un
+# modèle pensé pour l'endurance (quelques minutes à ~20 min). Y mélanger
+# des efforts très courts (dominés par la capacité anaérobie/neuro-
+# musculaire, pas la même physiologie) fausserait CP et W' eux-mêmes,
+# pas seulement les points ajoutés. Ce jeu-ci ne sert QU'à lire la courbe
+# MMP réelle pour rank_forecast_windows_from_real_curve (T-49b/T-49c) —
+# jamais passé à fit_current_cp.
+SHORT_DURATIONS_FOR_REAL_CURVE_S = (30, 45, 60, 90, 120, 150)
 DEFAULT_DRAFT_STATUS = "unknown"
 # ';' plutôt que ',' : Excel en locale française écrit (et attend, au
 # double-clic) des CSV séparés par ';' — un ',' obligerait à repasser par
