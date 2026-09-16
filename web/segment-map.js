@@ -54,7 +54,10 @@ async function renderSegmentMap(segmentId) {
   currentMap = new maplibregl.Map({
     container: "segment-map",
     style: `https://api.maptiler.com/maps/outdoor-v2/style.json?key=${apiKey}`,
-    pitch: 60, // "relief inclinable" demandé : on part déjà penché, pas à plat
+    // pitch à 0 ici (pas 60) : cadrer les bornes ET incliner la caméra en
+    // une seule étape donne un zoom aberrant (constaté en vrai, T-52) —
+    // fitBounds calcule mal l'échelle quand la caméra est déjà penchée.
+    // L'inclinaison est appliquée séparément APRÈS le cadrage, plus bas.
     attributionControl: false,
   });
   currentMap.addControl(new maplibregl.NavigationControl(), "top-right");
@@ -93,7 +96,15 @@ async function renderSegmentMap(segmentId) {
     // Trouvé en testant en vrai (T-52) : les contrôles s'affichaient mais
     // la carte restait blanche, chaque clic relançait l'erreur.
     currentMap.once("idle", () => {
-      currentMap.fitBounds(bounds, { padding: 40, pitch: 60, duration: 0 });
+      // Cadrage à plat d'abord (pas de `pitch` ici, voir le commentaire du
+      // constructeur plus haut) — fitBounds calcule le zoom correctement
+      // seulement à plat. Une fois posé, `once("moveend", ...)` incline la
+      // caméra à 60° séparément ("relief inclinable" demandé), sans
+      // perturber le calcul de zoom déjà fait.
+      currentMap.fitBounds(bounds, { padding: 40, duration: 0 });
+      currentMap.once("moveend", () => {
+        currentMap.easeTo({ pitch: 60, duration: 600 });
+      });
     });
   });
 }
