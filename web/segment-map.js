@@ -86,6 +86,14 @@ async function renderSegmentMap(segmentId) {
       (b, coord) => b.extend(coord),
       new maplibregl.LngLatBounds(coordinates[0], coordinates[0])
     );
-    currentMap.fitBounds(bounds, { padding: 40, pitch: 60, duration: 0 });
+    // "idle" (pas tout de suite après setTerrain) : bug connu MapLibre —
+    // positionner la caméra avant que les tuiles d'élévation terrain
+    // aient fini de charger corrompt le centre de la carte en NaN, et ça
+    // reste cassé pour toute interaction suivante (zoom, molette...).
+    // Trouvé en testant en vrai (T-52) : les contrôles s'affichaient mais
+    // la carte restait blanche, chaque clic relançait l'erreur.
+    currentMap.once("idle", () => {
+      currentMap.fitBounds(bounds, { padding: 40, pitch: 60, duration: 0 });
+    });
   });
 }
