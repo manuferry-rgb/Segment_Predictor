@@ -10,6 +10,39 @@
 
 let currentMap = null;
 
+// Contrôle MapLibre maison (IControl) : le bouton "reset north" du
+// NavigationControl reste un simple pictogramme, jugé pas assez lisible
+// (retour utilisateur, T-52) — celui-ci affiche un vrai "N" en toutes
+// lettres, dans le même style visuel que la boussole vent déjà utilisée
+// ailleurs (app.js, cercle + aiguille tournante). Ajouté via addControl
+// (pas mis dans le HTML statique de #segment-map) : MapLibre reconstruit
+// entièrement le contenu de son conteneur à l'initialisation, tout
+// enfant ajouté avant coup serait perdu.
+class NorthIndicatorControl {
+  onAdd(map) {
+    this._map = map;
+    this._container = document.createElement("div");
+    this._container.className = "maplibregl-ctrl map-compass";
+    this._container.innerHTML = `
+      <svg viewBox="0 0 40 40" fill="none" aria-hidden="true">
+        <circle cx="20" cy="20" r="17" fill="var(--surface)" stroke="var(--border)" stroke-width="1.5" />
+        <g class="needle">
+          <text x="20" y="12" text-anchor="middle" font-size="11" font-weight="700" fill="var(--accent)" font-family="var(--font-body)">N</text>
+        </g>
+      </svg>`;
+    this._update = () => {
+      this._container.style.setProperty("--deg", `${-map.getBearing()}deg`);
+    };
+    map.on("rotate", this._update);
+    this._update();
+    return this._container;
+  }
+  onRemove() {
+    this._map.off("rotate", this._update);
+    this._container.remove();
+  }
+}
+
 async function renderSegmentMap(segmentId) {
   const container = document.getElementById("segment-map");
   if (!container) return;
@@ -73,6 +106,7 @@ async function renderSegmentMap(segmentId) {
     new maplibregl.NavigationControl({ showCompass: true, showZoom: true, visualizePitch: true }),
     "top-right"
   );
+  currentMap.addControl(new NorthIndicatorControl(), "top-left");
 
   currentMap.on("load", () => {
     // Tuiles-terrain (élévation), séparées du fond de carte lui-même —
