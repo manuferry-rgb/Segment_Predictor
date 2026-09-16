@@ -20,6 +20,7 @@ from segment_predictor.models.segment import (
     bearing_rad,
     chunk_segment,
     haversine_distance_m,
+    power_required_for_target_time,
     segment_chunks_from_polyline,
     segment_chunks_from_profile,
     simulate_segment_time,
@@ -736,3 +737,82 @@ def test_simulate_segment_time_from_mmp_curve_initial_guess_does_not_change_the_
 def test_simulate_segment_time_from_mmp_curve_raises_on_empty_chunks() -> None:
     with pytest.raises(ValueError, match="tronçon"):
         simulate_segment_time_from_mmp_curve([], _FLAT_MMP_CURVE, _MASS_KG, _CDA_M2, _CRR)
+
+
+# ---- power_required_for_target_time (T-51d) ----------------------------------------------
+#
+# Question DIFFÉRENTE des fonctions simulate_segment_time* ci-dessus : celles-ci
+# partent d'une puissance (soutenable selon CP+W' ou la courbe réelle) pour
+# EN DÉDUIRE un temps. Ici le temps est déjà CONNU (ex. le KOM du segment,
+# T-51) et on cherche la puissance CONSTANTE qui, appliquée sur le VRAI
+# relief (pente variable par tronçon, T-51c), donnerait exactement ce
+# temps — répond à "quelle puissance pour tenir CE temps sur CE tracé",
+# pas "quel temps pour tenir CETTE puissance".
+
+
+def test_power_required_for_target_time_round_trips_through_cyclist_speed_from_power() -> None:
+    """Vérité connue construite à l'envers : une vraie puissance P donne une
+    vitesse (cyclist_speed_from_power, déjà testée ailleurs), donc un temps
+    exact sur un tronçon plat ; power_required_for_target_time doit
+    retrouver P à partir de ce seul temps."""
+    chunks = [SegmentChunk(0.0, 2000.0, 0.0, heading_rad=0.0)]
+    true_power_w = 280.0
+    speed_ms = cyclist_speed_from_power(
+        true_power_w, 0.0, 0.0, _MASS_KG, _CDA_M2, _CRR, STANDARD_AIR_DENSITY_KG_M3
+    )
+    target_time_s = 2000.0 / speed_ms
+
+    power_w = power_required_for_target_time(chunks, target_time_s, _MASS_KG, _CDA_M2, _CRR)
+
+    assert power_w == pytest.approx(true_power_w, abs=0.5)
+
+
+def test_power_required_for_target_time_round_trips_on_a_real_varying_profile() -> None:
+    """Même principe que ci-dessus, mais sur un profil à PENTE VARIABLE
+    (plat puis montée puis descente) — la puissance retrouvée doit être
+    UNIQUE même si le temps par tronçon, lui, varie tout du long."""
+    chunks = [
+        SegmentChunk(0.0, 500.0, 0.0, heading_rad=0.0),
+        SegmentChunk(500.0, 500.0, 0.08, heading_rad=0.0),
+        SegmentChunk(1000.0, 500.0, -0.03, heading_rad=0.0),
+    ]
+    true_power_w = 250.0
+    expected_time_s = sum(
+        chunk.length_m
+        / cyclist_speed_from_power(
+            true_power_w, chunk.grade, 0.0, _MASS_KG, _CDA_M2, _CRR, STANDARD_AIR_DENSITY_KG_M3
+        )
+        for chunk in chunks
+    )
+
+    power_w = power_required_for_target_time(chunks, expected_time_s, _MASS_KG, _CDA_M2, _CRR)
+
+    assert power_w == pytest.approx(true_power_w, abs=0.5)
+
+
+def test_power_required_for_target_time_more_power_needed_for_a_shorter_target() -> None:
+    """Sanity check directionnel : viser un temps plus court sur le MÊME
+    tracé doit demander STRICTEMENT plus de puissance, jamais moins."""
+    chunks = [SegmentChunk(0.0, 2000.0, 0.03, heading_rad=0.0)]
+
+    slower_power_w = power_required_for_target_time(chunks, 400.0, _MASS_KG, _CDA_M2, _CRR)
+    faster_power_w = power_required_for_target_time(chunks, 300.0, _MASS_KG, _CDA_M2, _CRR)
+
+    assert faster_power_w > slower_power_w
+
+
+def test_power_required_for_target_time_headwind_needs_more_power_than_no_wind() -> None:
+    chunks = [SegmentChunk(0.0, 2000.0, 0.0, heading_rad=0.0)]
+
+    no_wind_power_w = power_required_for_target_time(chunks, 300.0, _MASS_KG, _CDA_M2, _CRR)
+    headwind_power_w = power_required_for_target_time(
+        chunks, 300.0, _MASS_KG, _CDA_M2, _CRR, wind_speed_ms=5.0, wind_direction_rad=0.0
+    )
+
+    assert headwind_power_w > no_wind_power_w
+
+
+def test_power_required_for_target_time_raises_on_non_positive_target() -> None:
+    chunks = [SegmentChunk(0.0, 2000.0, 0.0, heading_rad=0.0)]
+    with pytest.raises(ValueError, match="target_time_s"):
+        power_required_for_target_time(chunks, 0.0, _MASS_KG, _CDA_M2, _CRR)

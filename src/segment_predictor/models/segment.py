@@ -13,6 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
+from scipy.optimize import brentq
 
 from .physics import air_density, cyclist_speed_from_power, effective_headwind_speed_ms
 from .power import interpolate_mmp_curve, sustainable_power_w
@@ -358,6 +359,64 @@ def _simulate_at_constant_power(
         )
         total_time_s += chunk.length_m / speed_ms
     return total_time_s
+
+
+DEFAULT_POWER_BOUNDS_W = (1.0, 3000.0)
+
+
+def power_required_for_target_time(
+    chunks: list[SegmentChunk],
+    target_time_s: float,
+    mass_kg: float,
+    cda_m2: float,
+    crr: float,
+    air_density_kg_m3: float = STANDARD_AIR_DENSITY_KG_M3,
+    wind_speed_ms: float = 0.0,
+    wind_direction_rad: float = 0.0,
+    power_bounds_w: tuple[float, float] = DEFAULT_POWER_BOUNDS_W,
+) -> float:
+    """Puissance CONSTANTE qui, appliquée sur `chunks` (profil RÉEL, pente
+    variable par tronçon, T-51c), donne exactement `target_time_s` au
+    total (T-51d).
+
+    Question inverse de `simulate_segment_time`/`simulate_segment_time_
+    from_mmp_curve` : celles-ci partent d'un modèle de puissance
+    soutenable pour EN DÉDUIRE un temps ; ici le temps est déjà CONNU
+    (typiquement le temps du KOM, T-51) et on cherche la puissance qui
+    l'explique — pas de boucle de convergence par point fixe nécessaire
+    (`_simulate_at_constant_power` est déjà une fonction directe de la
+    puissance), juste une recherche de racine par la méthode de Brent
+    (même outil que `cyclist_speed_from_power`, physics.py) sur
+    `_simulate_at_constant_power(power_w, ...) - target_time_s`,
+    strictement décroissante en `power_w` (plus de puissance -> toujours
+    plus vite, jamais l'inverse) : une seule racine dans `power_bounds_w`.
+    """
+    if target_time_s <= 0:
+        raise ValueError(f"target_time_s doit être positif, reçu {target_time_s}")
+
+    def residual(power_w: float) -> float:
+        return (
+            _simulate_at_constant_power(
+                chunks,
+                power_w,
+                mass_kg,
+                cda_m2,
+                crr,
+                air_density_kg_m3,
+                wind_speed_ms,
+                wind_direction_rad,
+            )
+            - target_time_s
+        )
+
+    lo, hi = power_bounds_w
+    try:
+        return brentq(residual, lo, hi)
+    except ValueError as error:
+        raise ValueError(
+            f"pas de puissance solution dans {power_bounds_w}W pour tenir {target_time_s:.0f}s "
+            f"sur ce profil : {error}"
+        ) from error
 
 
 def _simulate_time_with_power_curve(
