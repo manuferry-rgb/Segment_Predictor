@@ -25,11 +25,16 @@ import httpx
 
 from segment_predictor.ingest.open_meteo import get_forecast_weather
 from segment_predictor.models.polyline import decode_polyline
-from segment_predictor.models.power import CriticalPowerFit, sustainable_power_w
+from segment_predictor.models.power import (
+    CriticalPowerFit,
+    interpolate_mmp_curve,
+    sustainable_power_w,
+)
 from segment_predictor.models.segment import (
     SegmentChunk,
     segment_chunks_from_polyline,
     simulate_segment_time,
+    simulate_segment_time_from_mmp_curve,
 )
 
 DEFAULT_FORECAST_DAYS = 10
@@ -53,6 +58,12 @@ class ForecastWindow:
     wind_speed_ms: float
     wind_direction_rad: float
     temperature_k: float
+    # "cp_model" (défaut, rank_forecast_windows) ou "real_curve"
+    # (rank_forecast_windows_from_real_curve, T-49b) : d'où vient
+    # required_power_w — un CP+W'/t extrapolé n'a pas la même fiabilité
+    # qu'une puissance RÉELLEMENT déjà atteinte, l'appelant (et l'UI) doit
+    # pouvoir distinguer les deux plutôt que les confondre silencieusement.
+    power_source: str = "cp_model"
 
 
 def extract_hourly_slot(hourly: dict, index: int) -> tuple[datetime, float, float, float]:
@@ -189,3 +200,68 @@ def rank_forecast_windows_for_segment(
     return rank_forecast_windows(
         forecast, chunks, cp_fit, mass_kg, cda_m2, crr, min_hour=min_hour, max_hour=max_hour
     )
+
+
+def rank_forecast_windows_from_real_curve(
+    forecast: dict,
+    chunks: list[SegmentChunk],
+    mmp_curve: dict[int, float],
+    mass_kg: float,
+    cda_m2: float,
+    crr: float,
+    min_hour: int = DEFAULT_MIN_HOUR,
+    max_hour: int = DEFAULT_MAX_HOUR,
+) -> list[ForecastWindow]:
+    """Variante de `rank_forecast_windows` (T-27) pour les segments trop
+    courts pour le modèle CP+W' (T-48a, T-49b) : `rank_forecast_windows`
+    exclut désormais tout créneau hors de `cp_fit.duration_range_s`
+    (typiquement 180-1200s) plutôt que d'extrapoler — un segment dont le
+    temps réaliste tombe toujours sous ce plancher (ex. montée courte et
+    raide) se retrouve alors avec AUCUN créneau du tout. Cette fonction
+    lit `mmp_curve` (la courbe RÉELLEMENT mesurée, T-49a) au lieu du
+    modèle lissé : pas d'extrapolation possible (`interpolate_mmp_curve`
+    lève déjà sa propre ValueError hors de sa plage mesurée), donc pas de
+    garde-fou séparé à réécrire ici, contrairement à T-48a.
+
+    `mmp_curve` : à fournir par l'appelant, calculée sur un jeu de durées
+    COURTES et séparé de `DEFAULT_CP_FIT_DURATIONS_S` (calibrate/
+    draft_tagging.py, T-49a) — mélanger des efforts très courts dans
+    l'ajustement CP+W' lui-même fausserait CP et W', ce n'est pas le
+    but ici : on ne fait QUE lire la courbe, jamais la réajuster.
+    """
+    hourly = forecast["hourly"]
+
+    windows = []
+    for i in range(len(hourly["time"])):
+        time, temperature_k, wind_speed_ms, wind_direction_rad = extract_hourly_slot(hourly, i)
+        if not (min_hour <= time.hour <= max_hour):
+            continue
+
+        try:
+            predicted_time_s = simulate_segment_time_from_mmp_curve(
+                chunks,
+                mmp_curve,
+                mass_kg,
+                cda_m2,
+                crr,
+                wind_speed_ms=wind_speed_ms,
+                wind_direction_rad=wind_direction_rad,
+            )
+            required_power_w = interpolate_mmp_curve(mmp_curve, predicted_time_s)
+        except ValueError:
+            continue  # vitesse insoluble, ou temps convergé hors de la plage mesurée
+
+        windows.append(
+            ForecastWindow(
+                time=time,
+                predicted_time_s=predicted_time_s,
+                required_power_w=required_power_w,
+                wind_speed_ms=wind_speed_ms,
+                wind_direction_rad=wind_direction_rad,
+                temperature_k=temperature_k,
+                power_source="real_curve",
+            )
+        )
+
+    windows.sort(key=lambda w: w.predicted_time_s)
+    return windows

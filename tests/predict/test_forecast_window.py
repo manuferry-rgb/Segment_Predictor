@@ -6,7 +6,10 @@ import pytest
 
 from segment_predictor.models.power import CriticalPowerFit
 from segment_predictor.models.segment import SegmentChunk
-from segment_predictor.predict.forecast_window import rank_forecast_windows
+from segment_predictor.predict.forecast_window import (
+    rank_forecast_windows,
+    rank_forecast_windows_from_real_curve,
+)
 
 _CP_FIT = CriticalPowerFit(
     cp_watts=250.0, w_prime_joules=20_000.0, r_squared=0.9, n_points=5, duration_range_s=(180, 1200)
@@ -193,6 +196,89 @@ def test_rank_forecast_windows_skips_slots_with_no_feasible_speed() -> None:
     )
 
     windows = rank_forecast_windows(forecast, _CHUNKS, _CP_FIT, _MASS_KG, _CDA_M2, _CRR)
+
+    assert len(windows) == 1
+    assert windows[0].time.hour == 11
+
+
+# ---- rank_forecast_windows_from_real_curve (T-49b) ------------------------------------
+
+# Segment court (Burg Climb-like, T-48a) : aucun créneau CP+W' ne rentre
+# jamais dans [180, 1200]s pour un tronçon aussi court, quel que soit le
+# vent (T-48a) — cette courbe MMP réelle, mesurée sur des durées courtes
+# (T-49a), est le seul moyen d'afficher quand même une estimation, basée
+# sur une puissance RÉELLEMENT atteinte plutôt qu'extrapolée.
+_SHORT_CHUNKS = [SegmentChunk(0.0, 600.0, 0.0, heading_rad=0.0)]  # plein nord
+_REAL_MMP_CURVE = {30: 600.0, 60: 450.0, 90: 380.0, 120: 340.0, 150: 310.0}
+
+
+def test_rank_forecast_windows_from_real_curve_filters_outside_hour_range() -> None:
+    forecast = _fake_forecast(
+        ["03:00", "10:00", "23:00"],
+        wind_speed_kmh=[0.0, 0.0, 0.0],
+        wind_direction_deg=[0.0, 0.0, 0.0],
+    )
+
+    windows = rank_forecast_windows_from_real_curve(
+        forecast, _SHORT_CHUNKS, _REAL_MMP_CURVE, _MASS_KG, _CDA_M2, _CRR, min_hour=6, max_hour=21
+    )
+
+    assert len(windows) == 1
+    assert windows[0].time.hour == 10
+
+
+def test_rank_forecast_windows_from_real_curve_sorts_fastest_first() -> None:
+    forecast = _fake_forecast(
+        ["10:00", "11:00"], wind_speed_kmh=[20.0, 20.0], wind_direction_deg=[0.0, 180.0]
+    )
+
+    windows = rank_forecast_windows_from_real_curve(
+        forecast, _SHORT_CHUNKS, _REAL_MMP_CURVE, _MASS_KG, _CDA_M2, _CRR
+    )
+
+    assert windows[0].time.hour == 11  # vent de dos : le plus rapide, en premier
+    assert windows[0].predicted_time_s < windows[1].predicted_time_s
+
+
+def test_rank_forecast_windows_from_real_curve_records_required_power_from_the_curve() -> None:
+    """La puissance affichée doit venir d'`interpolate_mmp_curve` (une
+    lecture directe de la courbe RÉELLE), pas de CP+W' — c'est tout
+    l'intérêt de cette fonction par rapport à `rank_forecast_windows`."""
+    from segment_predictor.models.power import interpolate_mmp_curve
+
+    forecast = _fake_forecast(["10:00"], wind_speed_kmh=[0.0], wind_direction_deg=[0.0])
+
+    windows = rank_forecast_windows_from_real_curve(
+        forecast, _SHORT_CHUNKS, _REAL_MMP_CURVE, _MASS_KG, _CDA_M2, _CRR
+    )
+
+    expected_power_w = interpolate_mmp_curve(_REAL_MMP_CURVE, windows[0].predicted_time_s)
+    assert windows[0].required_power_w == pytest.approx(expected_power_w)
+
+
+def test_rank_forecast_windows_from_real_curve_marks_power_source() -> None:
+    forecast = _fake_forecast(["10:00"], wind_speed_kmh=[0.0], wind_direction_deg=[0.0])
+
+    windows = rank_forecast_windows_from_real_curve(
+        forecast, _SHORT_CHUNKS, _REAL_MMP_CURVE, _MASS_KG, _CDA_M2, _CRR
+    )
+
+    assert windows[0].power_source == "real_curve"
+
+
+def test_rank_forecast_windows_excludes_slots_outside_the_measured_curve_range() -> None:
+    """60 km/h de face pousse le temps convergé à 156s, hors de la plage
+    MESURÉE [30, 150]s de _REAL_MMP_CURVE (contrairement à T-48a, la
+    plage ici vient directement d'`interpolate_mmp_curve`, pas d'un champ
+    séparé à vérifier explicitement — le ValueError qu'elle lève déjà
+    suffit)."""
+    forecast = _fake_forecast(
+        ["10:00", "11:00"], wind_speed_kmh=[60.0, 0.0], wind_direction_deg=[0.0, 0.0]
+    )
+
+    windows = rank_forecast_windows_from_real_curve(
+        forecast, _SHORT_CHUNKS, _REAL_MMP_CURVE, _MASS_KG, _CDA_M2, _CRR
+    )
 
     assert len(windows) == 1
     assert windows[0].time.hour == 11
