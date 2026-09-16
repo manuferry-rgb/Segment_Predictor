@@ -14,7 +14,13 @@ _CP_FIT = CriticalPowerFit(
 _MASS_KG = 75.0
 _CDA_M2 = 0.30
 _CRR = 0.005
-_CHUNKS = [SegmentChunk(0.0, 2000.0, 0.0, heading_rad=0.0)]  # plein nord
+_CHUNKS = [SegmentChunk(0.0, 3500.0, 0.0, heading_rad=0.0)]  # plein nord
+# 3500m plutôt que 2000m (valeur d'origine) : le temps prédit sans vent
+# (~166s) tombait déjà sous le minimum calibré de _CP_FIT (180s, T-48a),
+# ce qui aurait fait exclure les fenêtres de TOUS les tests existants dès
+# l'ajout du garde-fou plage-calibrée — 3500m laisse assez de marge pour
+# que les scénarios de vent existants (jusqu'à 20 km/h) restent dans
+# [180, 1200]s sans changer ce que chaque test vérifie.
 
 
 def _fake_forecast(hours: list[str], wind_speed_kmh: list[float], wind_direction_deg: list[float]):
@@ -87,9 +93,12 @@ def test_rank_forecast_windows_uses_every_chunk_not_just_the_first() -> None:
     la valeur du test est de forcer à passer une VRAIE liste plutôt qu'un
     unique SegmentChunk, ce que l'ancienne signature ne permettait pas)."""
     two_leg_chunks = [
-        SegmentChunk(0.0, 1000.0, 0.0, heading_rad=0.0),  # plein nord (aller)
-        SegmentChunk(1000.0, 1000.0, 0.0, heading_rad=math.pi),  # plein sud (retour)
+        SegmentChunk(0.0, 1750.0, 0.0, heading_rad=0.0),  # plein nord (aller)
+        SegmentChunk(1750.0, 1750.0, 0.0, heading_rad=math.pi),  # plein sud (retour)
     ]
+    # 1750m/jambe (3500m total) plutôt que 1000m d'origine, même raison
+    # que _CHUNKS ci-dessus : rester dans [180, 1200]s une fois le
+    # garde-fou T-48a en place.
     windy_forecast = _fake_forecast(["10:00"], wind_speed_kmh=[36.0], wind_direction_deg=[0.0])
     calm_forecast = _fake_forecast(["10:00"], wind_speed_kmh=[0.0], wind_direction_deg=[0.0])
 
@@ -119,6 +128,51 @@ def test_rank_forecast_windows_returns_empty_when_all_slots_outside_range() -> N
     windows = rank_forecast_windows(forecast, _CHUNKS, _CP_FIT, _MASS_KG, _CDA_M2, _CRR)
 
     assert windows == []
+
+
+def test_rank_forecast_windows_excludes_slots_predicted_shorter_than_cp_range() -> None:
+    """T-48a : un créneau dont le temps prédit tombe SOUS le minimum
+    calibré de cp_fit.duration_range_s (180s par défaut) est écarté du
+    classement plutôt que de laisser sustainable_power_w (models/power.py)
+    extrapoler silencieusement CP+W'/t à une durée où le modèle n'a jamais
+    été calibré — trouvé en prod (T-47) : une "meilleure fenêtre" plus
+    rapide que le KOM du segment lui-même, avec une puissance requise
+    (709W) physiologiquement intenable, sur un segment prédit à 66s."""
+    short_chunks = [SegmentChunk(0.0, 800.0, 0.0, heading_rad=0.0)]  # ~55s sans vent
+    forecast = _fake_forecast(["10:00"], wind_speed_kmh=[0.0], wind_direction_deg=[0.0])
+
+    windows = rank_forecast_windows(forecast, short_chunks, _CP_FIT, _MASS_KG, _CDA_M2, _CRR)
+
+    assert windows == []
+
+
+def test_rank_forecast_windows_excludes_slots_predicted_longer_than_cp_range() -> None:
+    """Symétrique du test précédent, côté durée trop LONGUE (>1200s par
+    défaut) — CP+W'/t est tout aussi peu fiable en extrapolation au-delà
+    de sa plage calibrée que en-deçà, pas seulement pour les durées
+    courtes."""
+    long_chunks = [SegmentChunk(0.0, 15_000.0, 0.0, heading_rad=0.0)]  # ~1400s sans vent
+    forecast = _fake_forecast(["10:00"], wind_speed_kmh=[0.0], wind_direction_deg=[0.0])
+
+    windows = rank_forecast_windows(forecast, long_chunks, _CP_FIT, _MASS_KG, _CDA_M2, _CRR)
+
+    assert windows == []
+
+
+def test_rank_forecast_windows_keeps_in_range_slots_alongside_out_of_range_ones() -> None:
+    """Le garde-fou T-48a écarte créneau par créneau, pas tout le
+    classement dès qu'UN créneau est hors plage — même logique que le
+    `except ValueError: continue` déjà présent pour une vitesse insoluble.
+    Vent calme (306.6s, dans la plage) à 10h vs. vent de dos fort à 11h
+    (175.0s avec _CHUNKS, sous les 180s calibrés) : seul 10h doit rester."""
+    forecast = _fake_forecast(
+        ["10:00", "11:00"], wind_speed_kmh=[0.0, 40.0], wind_direction_deg=[0.0, 180.0]
+    )
+
+    windows = rank_forecast_windows(forecast, _CHUNKS, _CP_FIT, _MASS_KG, _CDA_M2, _CRR)
+
+    assert len(windows) == 1
+    assert windows[0].time.hour == 10
 
 
 def test_rank_forecast_windows_skips_slots_with_no_feasible_speed() -> None:

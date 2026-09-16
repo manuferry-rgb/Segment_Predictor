@@ -118,6 +118,17 @@ def rank_forecast_windows(
         except ValueError:
             continue  # pas de vitesse solution pour ce créneau (ex. vent de face extrême)
 
+        # T-48a : hors de duration_range_s, CP + W'/t (sustainable_power_w,
+        # models/power.py) extrapole silencieusement — le modèle n'a jamais
+        # été calibré à ces durées (trop court : régime anaérobie/neuro-
+        # musculaire pas du tout le même ; trop long : dérive tout aussi peu
+        # fiable). Trouvé en prod : une "meilleure fenêtre" à 66s donnant
+        # 709W, plus rapide que le KOM du segment lui-même. Même philosophie
+        # que interpolate_mmp_curve (T-42), qui refuse déjà d'extrapoler.
+        range_min_s, range_max_s = cp_fit.duration_range_s
+        if not (range_min_s <= predicted_time_s <= range_max_s):
+            continue
+
         windows.append(
             ForecastWindow(
                 time=time,
