@@ -65,7 +65,14 @@ async function renderSegmentMap(segmentId) {
     // L'inclinaison est appliquée séparément APRÈS le cadrage, plus bas.
     attributionControl: false,
   });
-  currentMap.addControl(new maplibregl.NavigationControl(), "top-right");
+  // showCompass explicite (déjà le défaut, mais visible dans le code plutôt
+  // que supposé) + visualizePitch : l'aiguille montre aussi l'inclinaison
+  // de la caméra (60°, T-52), pas seulement le nord — cliquer dessus
+  // remet la carte à plat et orientée nord.
+  currentMap.addControl(
+    new maplibregl.NavigationControl({ showCompass: true, showZoom: true, visualizePitch: true }),
+    "top-right"
+  );
 
   currentMap.on("load", () => {
     // Tuiles-terrain (élévation), séparées du fond de carte lui-même —
