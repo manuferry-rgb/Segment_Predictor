@@ -269,6 +269,12 @@ function renderResults(data) {
   const windKmh = Math.round(best.wind_speed_ms * 3.6);
   const tempC = Math.round(best.temperature_k - 273.15);
   const cpWatts = data.calibration.cp_watts;
+  // "real_curve" (T-49c) : segment trop court pour le modèle CP+W'
+  // (T-48a) — la puissance vient d'un effort RÉELLEMENT déjà atteint,
+  // pas d'une extrapolation "requise". Le libellé doit refléter cette
+  // différence, pas la maquiller derrière le même mot que d'habitude.
+  const isRealCurve = best.power_source === "real_curve";
+  const powerLabel = isRealCurve ? "W déjà atteints (mesurés)" : "W requis";
 
   resultsEl.innerHTML = `
     <section class="hero">
@@ -277,9 +283,18 @@ function renderResults(data) {
         <h1 class="hero-time">${formatMmSs(best.predicted_time_s)}</h1>
         <p class="hero-sub">
           ${formatDayHour(best.time)}
-          ${zonePillHtml(best.required_power_w, cpWatts)} ${Math.round(best.required_power_w)} W requis
+          ${zonePillHtml(best.required_power_w, cpWatts)} ${Math.round(best.required_power_w)} ${powerLabel}
         </p>
-        ${renderRealPowerCurveNote(data.real_power_curve, data.real_power_curve_unavailable_reason, cpWatts)}
+        ${
+          isRealCurve
+            ? `<p class="hero-note">Segment trop court pour le modèle CP+W' (moins de 3 min) —
+               estimation basée sur ta courbe de puissance réellement mesurée, pas sur un modèle extrapolé.</p>`
+            : renderRealPowerCurveNote(
+                data.real_power_curve,
+                data.real_power_curve_unavailable_reason,
+                cpWatts
+              )
+        }
       </div>
       <div class="hero-stats">
         <div class="stat-tile">
