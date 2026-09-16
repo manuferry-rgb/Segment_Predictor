@@ -119,20 +119,27 @@ WIND_RELATIVE_STD = 0.20
 
 app = FastAPI(title="Segment Chaser API")
 
+# SESSION_COOKIE_HTTPS_ONLY (T-47, durcissement) : https_only=True marque
+# le cookie "Secure" — le navigateur refuse alors de l'envoyer sur autre
+# chose que du HTTPS. Correct et souhaitable en production (Caddy sert du
+# HTTPS devant l'app, T-47), mais casserait la connexion en local
+# (http://127.0.0.1, T-36, aucun HTTPS) si toujours activé — piloté par
+# .env comme les autres réglages qui diffèrent entre les deux
+# environnements, pas en dur. Absent de .env (donc "false") par défaut :
+# le développement local reste utilisable sans y penser.
+SESSION_COOKIE_HTTPS_ONLY = os.environ.get("SESSION_COOKIE_HTTPS_ONLY", "false").lower() == "true"
+
 # SessionMiddleware (T-45, nouveau concept) : signe un cookie
 # (`session_cookie=` ci-dessous, nommé explicitement plutôt que de
 # laisser le nom générique "session" par défaut) contenant l'état de
 # connexion (user_id) — sans lui, chaque requête serait anonyme,
 # impossible de savoir "qui parle" entre /auth/strava/callback et
-# /predict. https_only=False : correct en local (http://127.0.0.1) ;
-# à repasser à True le jour où l'app tourne derrière un vrai domaine
-# HTTPS (T-47), sinon le cookie ne serait plus envoyé du tout par le
-# navigateur.
+# /predict.
 app.add_middleware(
     SessionMiddleware,
     secret_key=SESSION_SECRET_KEY,
     session_cookie="segment_chaser_session",
-    https_only=False,
+    https_only=SESSION_COOKIE_HTTPS_ONLY,
 )
 
 # Une connexion DuckDB par PROCESSUS uvicorn, ouverte une seule fois au
