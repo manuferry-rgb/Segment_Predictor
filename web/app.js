@@ -272,48 +272,50 @@ function renderResults(data) {
 
   resultsEl.innerHTML = `
     <section class="hero">
-      <div class="hero-main">
-        <p class="eyebrow">Meilleure fenêtre</p>
-        <h1 class="hero-time">${formatMmSs(best.predicted_time_s)}</h1>
-        <p class="hero-sub">
-          ${formatDayHour(best.time)}
-          ${zonePillHtml(best.required_power_w, cpWatts)} ${Math.round(best.required_power_w)} ${powerLabel}
-        </p>
-        ${
-          isRealCurve
-            ? `<p class="hero-note">Segment trop court pour le modèle CP+W' (moins de 3 min) —
-               estimation basée sur ta courbe de puissance réellement mesurée, pas sur un modèle extrapolé.</p>`
-            : renderRealPowerCurveNote(
-                data.real_power_curve,
-                data.real_power_curve_unavailable_reason,
-                cpWatts
-              )
-        }
-      </div>
-      <div class="hero-stats">
-        <div class="stat-tile">
-          <div class="compass" style="--deg: ${compassRotationDeg(best.wind_direction_rad)}deg">
-            <svg viewBox="0 0 40 40" fill="none" aria-hidden="true">
-              <circle cx="20" cy="20" r="17" stroke="var(--border)" stroke-width="1.5" />
-              <text x="20" y="7" text-anchor="middle" font-size="6" fill="var(--text-muted)" font-family="var(--font-body)">N</text>
-              <g class="needle"><path d="M20 6 L23 20 L20 17 L17 20 Z" fill="var(--accent)" /></g>
-            </svg>
-          </div>
-          <div>
-            <p class="stat-value">${windKmh} km/h</p>
-            <p class="stat-label">Vent du ${compassLabel(best.wind_direction_rad)}</p>
-          </div>
+      <div class="hero-left">
+        <div class="hero-main">
+          <p class="eyebrow">Meilleure fenêtre</p>
+          <h1 class="hero-time">${formatMmSs(best.predicted_time_s)}</h1>
+          <p class="hero-sub">
+            ${formatDayHour(best.time)}
+            ${zonePillHtml(best.required_power_w, cpWatts)} ${Math.round(best.required_power_w)} ${powerLabel}
+          </p>
+          ${
+            isRealCurve
+              ? `<p class="hero-note">Segment trop court pour le modèle CP+W' (moins de 3 min) —
+                 estimation basée sur ta courbe de puissance réellement mesurée, pas sur un modèle extrapolé.</p>`
+              : renderRealPowerCurveNote(
+                  data.real_power_curve,
+                  data.real_power_curve_unavailable_reason,
+                  cpWatts
+                )
+          }
         </div>
-        <div class="stat-tile">
-          <div>
-            <p class="stat-value">${tempC}°C</p>
-            <p class="stat-label">Température</p>
+        <div class="hero-stats">
+          <div class="stat-tile">
+            <div class="compass" style="--deg: ${compassRotationDeg(best.wind_direction_rad)}deg">
+              <svg viewBox="0 0 40 40" fill="none" aria-hidden="true">
+                <circle cx="20" cy="20" r="17" stroke="var(--border)" stroke-width="1.5" />
+                <text x="20" y="7" text-anchor="middle" font-size="6" fill="var(--text-muted)" font-family="var(--font-body)">N</text>
+                <g class="needle"><path d="M20 6 L23 20 L20 17 L17 20 Z" fill="var(--accent)" /></g>
+              </svg>
+            </div>
+            <div>
+              <p class="stat-value">${windKmh} km/h</p>
+              <p class="stat-label">Vent du ${compassLabel(best.wind_direction_rad)}</p>
+            </div>
           </div>
-        </div>
-        <div class="stat-tile mono">
-          <div>
-            <p class="stat-value">${cpWatts.toFixed(0)} ± ${data.calibration.cp_watts_std.toFixed(0)} W</p>
-            <p class="stat-label">Puissance seuil · CdA ${data.calibration.cda_m2.toFixed(3)} m² · Crr ${data.calibration.crr.toFixed(4)}</p>
+          <div class="stat-tile">
+            <div>
+              <p class="stat-value">${tempC}°C</p>
+              <p class="stat-label">Température</p>
+            </div>
+          </div>
+          <div class="stat-tile mono">
+            <div>
+              <p class="stat-value">${cpWatts.toFixed(0)} ± ${data.calibration.cp_watts_std.toFixed(0)} W</p>
+              <p class="stat-label">Puissance seuil · CdA ${data.calibration.cda_m2.toFixed(3)} m² · Crr ${data.calibration.crr.toFixed(4)}</p>
+            </div>
           </div>
         </div>
       </div>

@@ -319,11 +319,20 @@ h1, h2 { text-wrap: balance; margin: 0; }
 .hero {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  /* flex-start (pas center) : la carte s'aligne sur le HAUT de "Meilleure
+     fenêtre", pas sur le milieu de tout le bloc gauche (demandé). */
+  align-items: flex-start;
   gap: 2rem;
   flex-wrap: wrap;
   padding: 0.5rem 0.25rem;
 }
+
+/* hero-main + hero-stats regroupés dans une seule colonne gauche : deux
+   flex-items directs de .hero (gauche/droite) plutôt que trois qui
+   pouvaient se répartir dans le désordre selon la largeur disponible —
+   la carte reste toujours la colonne de droite, jamais repoussée sous
+   le reste (demandé : "il y a de la place à droite"). */
+.hero-left { display: flex; flex-direction: column; gap: 0.75rem; flex: 1 1 420px; min-width: 280px; }
 
 .eyebrow {
   margin: 0 0 0.2rem;
