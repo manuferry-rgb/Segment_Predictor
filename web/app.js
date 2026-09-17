@@ -317,6 +317,12 @@ function renderResults(data) {
           </div>
         </div>
       </div>
+      <div class="hero-map">
+        <article class="card map-card">
+          <h2>Carte du segment</h2>
+          <div id="segment-map" class="segment-map"></div>
+        </article>
+      </div>
     </section>
 
     <section class="body-grid">
@@ -327,10 +333,6 @@ function renderResults(data) {
         </div>
       </div>
       <div class="col-right">
-        <article class="card map-card">
-          <h2>Carte du segment</h2>
-          <div id="segment-map" class="segment-map"></div>
-        </article>
         ${renderUncertaintyCard(data.uncertainty, best.predicted_time_s)}
         <article class="card">
           <h2>Classement des créneaux</h2>

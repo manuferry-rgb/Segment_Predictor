@@ -362,6 +362,14 @@ h1, h2 { text-wrap: balance; margin: 0; }
 
 .hero-stats { display: flex; gap: 1rem; flex-wrap: wrap; }
 
+/* Carte déplacée du bas de page jusque dans le héro, à droite de "Meilleure
+   fenêtre" (demandé) — largeur fixe plutôt que de grandir avec .hero-main,
+   hauteur réduite (220px, pas les 280px du .map-card générique) pour
+   rester proportionnée à côté du reste du héro plutôt que de l'écraser. */
+.hero-map { flex: 0 0 320px; min-width: 260px; }
+.hero-map .map-card { padding: 0.9rem 0.9rem 0; }
+.hero-map .segment-map { height: 220px; margin: 0 -0.9rem; }
+
 .stat-tile {
   background: var(--surface);
   border: 1px solid var(--border);
