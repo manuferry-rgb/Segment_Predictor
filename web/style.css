@@ -560,3 +560,10 @@ tbody tr.row-clickable:hover { background: var(--surface-2); }
 tbody tr.row-clickable:first-child:hover {
   background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
+
+/* Guidelines Strava (developers.strava.com/guidelines) : logo affiché,
+   jamais modifié, séparé du logo de l'app et jamais plus visible que lui
+   — d'où la petite taille et la place en fin de page, bien après le nom
+   "Segment Chaser" du bandeau du haut (beaucoup plus grand). */
+.footer { display: flex; justify-content: center; padding-top: 0.5rem; opacity: 0.85; }
+.footer img { height: 20px; width: auto; display: block; }
